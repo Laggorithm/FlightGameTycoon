@@ -1,7 +1,9 @@
 #Error Codes:
 #1 -- wrong input during upgrading (upgrade level possibly wasn't an int)
-#2 -- error in list checker (problem with adding or checking for airplanes)
-#3 -- list of airplanes is empty. Either initialization went wrong or append didn't work properly
+#2 -- error in connecting to sql database or fetching data from it
+#3 -- error in list checker (problem with adding or checking for airplanes)
+#4 -- list of airplanes is empty. Either initialization went wrong or append didn't work properly
+
 import mysql.connector
 class airplane:
     def __init__(self, aircraft_id, model_code, base_level, current_airport_ident, registration, nickname, acquired_day, purchase_price, condition_percent, status, hours_flown, sold_day, sale_price, speed_day, save_id, base_id, ident):
@@ -54,53 +56,58 @@ def upgrade_airplane(id, level):
         print("Error code 1")
     return
 def init_airplanes():
-    connection = mysql.connector.connect(
-        host='localhost',
-        port=3306,
-        database='airway666',
-        user='Laggorithm',
-        password='CupOfLiberTea',
-        autocommit=True)
-    cursor = connection.cursor()
-    count = f"select count(*) from airplane group by aircraft_id order by aircraft_id asc;"
-    cursor.execute(count)
-    count = cursor.fetchall()
-    total = sum(row[0] for row in count)
-    for i in range(total):
-        query = "SELECT aircraft_id, model_code, base_level, current_airport_ident, registration, nickname, acquired_day, purchase_price, condition_percent, status, hours_flown, sold_day, sale_price, speed_day, save_id, base_id, ident FROM airplane;"
+    try:
+        connection = mysql.connector.connect(
+            host='localhost',
+            port=3306,
+            database='airway666',
+            user='Laggorithm',
+            password='CupOfLiberTea',
+            autocommit=True)
         cursor = connection.cursor()
-        cursor.execute(query)
-        rows = cursor.fetchall()
-        Aircrafts = []
+        count = f"select count(*) from airplane group by aircraft_id order by aircraft_id asc;"
+        cursor.execute(count)
+        count = cursor.fetchall()
+        total = sum(row[0] for row in count)
+        for i in range(total):
+            query = "SELECT aircraft_id, model_code, base_level, current_airport_ident, registration, nickname, acquired_day, purchase_price, condition_percent, status, hours_flown, sold_day, sale_price, speed_day, save_id, base_id, ident FROM airplane;"
+            cursor = connection.cursor()
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            Aircrafts = []
 
-        for row in rows:
-            plane = aircraft_Model
-            (
-                plane.aircraft_id,
-                plane.model_code,
-                plane.base_level,
-                plane.current_airport_ident,
-                plane.registration,
-                plane.nickname,
-                plane.acquired_day,
-                plane.purchase_price,
-                plane.condition_percent,
-                plane.status,
-                plane.hours_flown,
-                plane.sold_day,
-                plane.sale_price,
-                plane.speed_day,
-                plane.save_id,
-                plane.base_id,
-                plane.ident
-            ) = row
+            for row in rows:
+                plane = aircraft_Model
+                (
+                    plane.aircraft_id,
+                    plane.model_code,
+                    plane.base_level,
+                    plane.current_airport_ident,
+                    plane.registration,
+                    plane.nickname,
+                    plane.acquired_day,
+                    plane.purchase_price,
+                    plane.condition_percent,
+                    plane.status,
+                    plane.hours_flown,
+                    plane.sold_day,
+                    plane.sale_price,
+                    plane.speed_day,
+                    plane.save_id,
+                    plane.base_id,
+                    plane.ident
+                ) = row
 
-            Aircrafts.append(plane)
+                Aircrafts.append(plane)
+        print_aircrafts()
+    except mysql.connector.Error as err:
+        print(err)
+        print("Error code: 2")
     return
 def print_aircrafts():
     try:
         if not Aircrafts:
-            print("Error code 3.")
+            print("Error code 4.")
             return
 
         for i, plane in enumerate(Aircrafts, start=1):
@@ -123,6 +130,8 @@ def print_aircrafts():
             print(f"  base_id: {plane.base_id}")
             print(f"  ident: {plane.ident}")
     except ValueError:
-        print("Error code 2.")
+        print("Error code 3.")
 #PROGRAMMMMMMMMMMMMMM
 Aircrafts: list[airplane] = []
+
+init_airplanes()

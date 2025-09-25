@@ -547,27 +547,38 @@ class GameSession:
             home_ident = self._get_primary_base_ident() or "-"
             print("\n" + "🛩️  Päävalikko".center(60, " "))
             print("─" * 60)
-            print(f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident}")
+            print(
+                f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident}")
             print("1) 📋 Listaa koneet")
             print("2) 🛒 Kauppa (osta kone)")
             print("3) ♻️  Päivitä konetta (ECO)")
             print("4) 📦 Aktiiviset tehtävät")
             print("5) ➕ Aloita uusi tehtävä")
             print("6) ⏭️  Seuraava päivä")
+            # Uudet pikakelausvaihtoehdot
+            print("7) ⏩ Etene X päivää")
+            print("8) 🎯 Etene kunnes ensimmäinen kone palaa")
             print("0) 🚪 Poistu")
 
             choice = input("Valinta: ").strip()
+
             if choice == "1":
                 self.list_aircraft()
+
             elif choice == "2":
                 self.shop_menu()
+
             elif choice == "3":
                 self.upgrade_menu()
+
             elif choice == "4":
                 self.show_active_tasks()
+
             elif choice == "5":
                 self.start_new_task()
+
             elif choice == "6":
+                # Yksi päivä eteenpäin (interaktiivinen: tulostaa ja pysäyttää Enteriin)
                 self.advance_to_next_day()
                 # Pelitilan tarkastelu (voitto/konkurssi)
                 if self.status == "BANKRUPT":
@@ -577,9 +588,49 @@ class GameSession:
                     print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää. Voitit pelin!")
                     self._set_status("VICTORY")
                     break
+
+            elif choice == "7":
+                # Pikakelaus: eteneminen X päivää (hiljaisesti)
+                try:
+                    n = int(input("Kuinka monta päivää? ").strip())
+                except ValueError:
+                    print("⚠️  Virheellinen numero.")
+                else:
+                    self.fast_forward_days(n)
+                    # Pelitilan tarkastelu
+                    if self.status == "BANKRUPT":
+                        print("💀 Yritys meni konkurssiin. Peli päättyy.")
+                        break
+                    if self.current_day >= SURVIVAL_TARGET_DAYS:
+                        # Jos pikakelaus ei jo asettanut VICTORY-tilaa, tee se nyt
+                        if self.status == "ACTIVE":
+                            self._set_status("VICTORY")
+                        print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää. Voitit pelin!")
+                        break
+
+            elif choice == "8":
+                # Pikakelaus: eteneminen kunnes ensimmäinen kone palaa (hiljaisesti)
+                try:
+                    cap_str = input("↩︎ Enter aloittaa pikakelauksen.").strip()
+                    cap = int(cap_str) if cap_str else 365
+                except ValueError:
+                    print("⚠️  Virheellinen numero.")
+                else:
+                    self.fast_forward_until_first_return(max_days=cap)
+                    # Pelitilan tarkastelu
+                    if self.status == "BANKRUPT":
+                        print("💀 Yritys meni konkurssiin. Peli päättyy.")
+                        break
+                    if self.current_day >= SURVIVAL_TARGET_DAYS:
+                        if self.status == "ACTIVE":
+                            self._set_status("VICTORY")
+                        print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää. Voitit pelin!")
+                        break
+
             elif choice == "0":
                 print("👋 Heippa!")
                 break
+
             else:
                 print("⚠️  Virheellinen valinta.")
 
@@ -956,38 +1007,38 @@ class GameSession:
 
     def _random_task_offers_for_plane(self, plane, count: int = 5):
         """
-        Generoi 'count' kpl tämän päivän tarjouksia annetulle koneelle.
-        - Aikaperusta: vähintään 1 pv (base_days >= 1).
-        - Jos rahti ylittää kapasiteetin: trips = ceil(payload / capacity),
-          total_days = base_days * trips (shuttle).
+        Generoi 'count' kpl tämän päivän rahtitarjouksia annetulle koneelle.
+        - Etäisyyteen suhteutettu rahtimäärä (voi ylittää kapasiteetin → useita reissuja).
+        - Kesto lasketaan matkan ja nopeuden perusteella; yli-kapasiteetti kasvattaa total_days.
         - Palkkio: (payload * PER_KG + distance * PER_KM) * effective_eco
-          ja varmistetaan ettei palkkio mene alle MIN_TASK_REWARD.
+          ja lattia varmistaa ettei palkkio mene negatiiviseksi/turhan pieneksi.
+        - Sakko on osuus palkkiosta, mutta ei koskaan negatiivinen.
+        Muokkaa: PER_KG, PER_KM, MIN_TASK_REWARD, ECO_MIN/ECO_MAX.
         """
-        import math
-        import random
-        from decimal import Decimal
 
-        # 1) Kerroinparametrit – MUOKKAA PALKKIOITA TÄSSÄ
-        PER_KG = Decimal("8.60")  # palkkio €/kg
-        PER_KM = Decimal("5.80")  # palkkio €/km
-        MIN_TASK_REWARD = Decimal("250.00")  # alin sallittu palkkio tehtävälle
-        ECO_MIN = Decimal("0.10")  # eco-kerroin ei koskaan alle 0.10
-        ECO_MAX = Decimal("5.00")  # eikä myöskään kohtuuttoman suuri
+        # Muokattavat palkkioparametrit
+        PER_KG = Decimal("10.10")  # €/kg
+        PER_KM = Decimal("6.90")  # €/km
+        MIN_TASK_REWARD = Decimal("250.00")  # alin sallittu palkkio
+        ECO_MIN = Decimal("0.10")  # eco-kerroin ei alle tämän
+        ECO_MAX = Decimal("5.00")  # eikä yli tämän
 
         dep_ident = plane["current_airport_ident"]
         speed_kts = float(plane.get("cruise_speed_kts") or 200.0)
         speed_km_per_day = max(1.0, speed_kts * 1.852 * 24.0)
         capacity = int(plane.get("base_cargo_kg") or 0) or 1
 
-        # 2) Käytä efektiivistä eco-kerrointa (malli + upgradet), ja rajaa järkevälle välille
+        # Yritä käyttää tehokasta eco-kerrointa (malli + upgradet); fallback: plane.eco_fee_multiplier
         try:
-            eff_eco = Decimal(str(get_effective_eco_for_aircraft(plane["aircraft_id"])))
+            eff_eco_val = get_effective_eco_for_aircraft(
+                plane["aircraft_id"])  # oletetaan funktion olevan käytettävissä
+            eff_eco = Decimal(str(eff_eco_val))
         except Exception:
-            # fallback: käytä mallin ecoa, jos funktio ei saatavilla
             eff_eco = Decimal(str(plane.get("eco_fee_multiplier") or 1.0))
+        # Rajaa eco kohtuullisiin rajoihin
         eff_eco = max(ECO_MIN, min(ECO_MAX, eff_eco))
 
-        # Haetaan ylikapasiteettia varten enemmän kohteita (count*2), jos osa karsiutuu
+        # Haetaan hieman ylimääräisiä kohteita siltä varalta, että osa karsiutuu
         dests = self._pick_random_destinations(count * 2, dep_ident)
         offers = []
 
@@ -996,17 +1047,16 @@ class GameSession:
                 break
 
             dest_ident = d["ident"]
-
-            # 3) Koordinaatit – jos puuttuu, ohitetaan
             dep_xy = self._get_airport_coords(dep_ident)
             dst_xy = self._get_airport_coords(dest_ident)
             if not (dep_xy and dst_xy):
+                # Jos koordinaatit puuttuvat, ohitetaan
                 continue
 
-            # 4) Etäisyys (km)
+            # Etäisyys (km)
             dist_km = self._haversine_km(dep_xy[0], dep_xy[1], dst_xy[0], dst_xy[1])
 
-            # 5) Generoi rahti etäisyyden mukaan (saa mennä yli kapasiteetin → useita reissuja)
+            # Rahti skaalataan etäisyyden mukaan; sallitaan yli-kapasiteetti (→ useita reissuja)
             if dist_km < 500:
                 payload = random.randint(max(1, capacity // 2), max(1, capacity * 3))
             elif dist_km < 1500:
@@ -1014,23 +1064,23 @@ class GameSession:
             else:
                 payload = random.randint(capacity * 2, capacity * 6)
 
-            # 6) Kesto ja shuttle-lähtöjen määrä
+            # Peruskesto (päivinä) matkan mukaan; yli-kapasiteetti lisää reissujen määrää ja kokonaiskestoa
             base_days = max(1, math.ceil(dist_km / speed_km_per_day))
             trips = max(1, math.ceil(payload / capacity))
             total_days = base_days * trips
 
-            # 7) Palkkio: per_kg + per_km, kerrotaan eco:lla, lattia varmistaa ettei negatiivinen
+            # Palkkion laskenta (lattia varmistaa ettei negatiivinen)
             base_reward = (Decimal(payload) * PER_KG) + (Decimal(dist_km) * PER_KM)
             reward = (base_reward * eff_eco).quantize(Decimal("0.01"))
             if reward < MIN_TASK_REWARD:
                 reward = MIN_TASK_REWARD
 
-            # 8) Sakko: 30 % palkkiosta, mutta ei koskaan negatiivinen
+            # Sakko osuutena; ei koskaan negatiivinen
             penalty = (reward * Decimal("0.30")).quantize(Decimal("0.01"))
             if penalty < Decimal("0.00"):
                 penalty = Decimal("0.00")
 
-            # 9) Deadline = kokonaiskesto + puskuri (puolikas trips, vähintään 1)
+            # Deadline: kokonaiskesto + puskuri
             buffer_days = max(1, trips // 2)
             deadline = self.current_day + total_days + buffer_days
 
@@ -1278,15 +1328,22 @@ class GameSession:
 
     # ---------- Seuraava päivä + kuukausilaskut ----------
 
-    def advance_to_next_day(self) -> None:
+    def advance_to_next_day(self, silent: bool = False) -> dict:
         """
-        Siirrä päivä eteenpäin:
-          - Päivitä game_saves.current_day
-          - Prosessoi saapuneet lennot (palkkio kassaan / myöhästyessä sakko vähennetään)
-          - Joka 30. päivä veloitetaan kuukausilaskut (HQ + koneiden huolto)
-          - Tarkista voitto/konkurssi-tilanne
+        Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
+        - Palauttaa yhteenvedon: {"arrivals": int, "earned": Decimal}
+        - silent=True: ei tulostuksia eikä Enter-pysäytystä (soveltuu pikakelaus-looppeihin).
+        - Joka 30. päivä veloitetaan kuukausilaskut.
+        HUOM: Python 3.9 -yhteensopiva: käytetään datetime.utcnow().
         """
+
         new_day = self.current_day + 1
+        arrivals_count = 0
+        total_delta = Decimal("0.00")
+
+        # UTC-naive aikaleima tietokantaan
+        db_timestamp = datetime.utcnow()
+
         yhteys = get_connection()
         try:
             try:
@@ -1297,13 +1354,13 @@ class GameSession:
             try:
                 yhteys.start_transaction()
 
-                # Päivän vaihto
+                # Päivän vaihto + updated_at
                 kursori.execute(
                     "UPDATE game_saves SET current_day = %s, updated_at = %s WHERE save_id = %s",
-                    (new_day, datetime.utcnow(), self.save_id),
+                    (new_day, db_timestamp, self.save_id),
                 )
 
-                # Saapuneet lennot tähän päivään mennessä
+                # Haetaan tähän päivään mennessä saapuvat lennot
                 kursori.execute(
                     """
                     SELECT f.flight_id,
@@ -1315,7 +1372,7 @@ class GameSession:
                            c.reward,
                            c.penalty
                     FROM flights f
-                    JOIN contracts c ON c.contractId = f.contract_id
+                             JOIN contracts c ON c.contractId = f.contract_id
                     WHERE f.save_id = %s
                       AND f.status = 'ENROUTE'
                       AND f.arrival_day <= %s
@@ -1323,10 +1380,10 @@ class GameSession:
                     (self.save_id, new_day),
                 )
                 arrivals = kursori.fetchall() or []
-
-                total_delta = Decimal("0.00")
+                arrivals_count = len(arrivals)
 
                 for rd in arrivals:
+                    # Salli sekä dict- että tuple-rivit
                     flight_id = rd["flight_id"] if isinstance(rd, dict) else rd[0]
                     contract_id = rd["contract_id"] if isinstance(rd, dict) else rd[1]
                     aircraft_id = rd["aircraft_id"] if isinstance(rd, dict) else rd[2]
@@ -1335,14 +1392,16 @@ class GameSession:
                     reward = _to_dec(rd["reward"] if isinstance(rd, dict) else rd[6])
                     penalty = _to_dec(rd["penalty"] if isinstance(rd, dict) else rd[7])
 
-                    # Lennon tila
+                    # Lennon tila saapuneeksi
                     kursori.execute("UPDATE flights SET status = 'ARRIVED' WHERE flight_id = %s", (flight_id,))
-                    # Kone vapaaksi
+
+                    # Kone vapautuu ja siirtyy määräkentälle
                     kursori.execute(
                         "UPDATE aircraft SET status = 'IDLE', current_airport_ident = %s WHERE aircraft_id = %s",
                         (arr_ident, aircraft_id),
                     )
-                    # Sopimus valmis + myöhästymistarkistus
+
+                    # Sopimuksen lopputulos (myöhästyminen vähentää palkkiota, mutta ei alle nollan)
                     if new_day <= deadline:
                         final_reward = reward
                         new_status = "COMPLETED"
@@ -1354,9 +1413,10 @@ class GameSession:
                         "UPDATE contracts SET status = %s, completed_day = %s WHERE contractId = %s",
                         (new_status, new_day, contract_id),
                     )
+
                     total_delta += final_reward
 
-                # Hyvitetään lennot kerralla
+                # Hyvitä ansiot kassaan kerralla
                 if total_delta != Decimal("0.00"):
                     kursori.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
                     row = kursori.fetchone()
@@ -1370,41 +1430,54 @@ class GameSession:
 
             except Exception as e:
                 yhteys.rollback()
-                print(f"❌ Seuraava päivä -käsittely epäonnistui: {e}")
-                return
-
+                if not silent:
+                    print(f"❌ Seuraava päivä -käsittely epäonnistui: {e}")
+                return {"arrivals": 0, "earned": Decimal("0.00")}
         finally:
             try:
                 kursori.close()
             except Exception:
                 pass
-            yhteys.close()
+            try:
+                yhteys.close()
+            except Exception:
+                pass
 
-        # Kuukausilaskut joka 30. päivä
+        # Kuukausilaskut joka 30. päivä (vain aktiiviselle yritykselle)
         if self.current_day % 30 == 0 and self.status == "ACTIVE":
-            self._process_monthly_bills()
+            self._process_monthly_bills(silent=silent)
 
-        gained = " (päivän hyödyt kirjattu)" if arrivals else ""
-        print(f"⏭️  Päivä siirtyi: {self.current_day}{gained}.")
-        input("\n↩︎ Enter jatkaaksesi...")
+        # Tulosteet vain ei-hiljaisessa tilassa
+        if not silent:
+            gained_str = f", ansaittu {self._fmt_money(total_delta)}" if arrivals_count > 0 else ""
+            print(f"⏭️  Päivä siirtyi: {self.current_day}{gained_str}.")
+            input("\n↩︎ Enter jatkaaksesi...")
 
-    def _process_monthly_bills(self) -> None:
+            if self.status == "BANKRUPT":
+                print("💀 Yritys meni konkurssiin.")
+            if self.current_day >= SURVIVAL_TARGET_DAYS and self.status == "ACTIVE":
+                print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää.")
+
+        return {"arrivals": arrivals_count, "earned": total_delta}
+
+    def _process_monthly_bills(self, silent: bool = False) -> None:
         """
-        Veloita kuukausittaiset kulut:
+        Veloittaa kuukausittaiset kulut:
           - HQ_MONTHLY_FEE
-          - MAINT_PER_AIRCRAFT per aktiivinen kone (STARTER-koneille voidaan soveltaa alennusta)
-        Jos rahat eivät riitä: asetetaan status = BANKRUPT ja ilmoitetaan pelaajalle.
+          - MAINT_PER_AIRCRAFT per aktiivinen kone
+          - STARTER-koneille alennus (STARTER_MAINT_DISCOUNT)
+        Jos rahat eivät riitä: asetetaan status = BANKRUPT.
         """
-        # Lasketaan aktiivisten (myymättömien) koneiden määrä ja STARTER-määrä
         yhteys = get_connection()
         try:
             kursori = yhteys.cursor(dictionary=True)
+            # Laske aktiivisten (ei myytyjen) koneiden määrä ja STARTER-koneiden osuus
             kursori.execute(
                 """
-                SELECT COUNT(*) AS total,
+                SELECT COUNT(*)                                                 AS total,
                        SUM(CASE WHEN am.category = 'STARTER' THEN 1 ELSE 0 END) AS starters
                 FROM aircraft a
-                JOIN aircraft_models am ON am.model_code = a.model_code
+                         JOIN aircraft_models am ON am.model_code = a.model_code
                 WHERE a.save_id = %s
                   AND (a.sold_day IS NULL OR a.sold_day = 0)
                 """,
@@ -1418,28 +1491,138 @@ class GameSession:
                 kursori.close()
             except Exception:
                 pass
-            yhteys.close()
+            try:
+                yhteys.close()
+            except Exception:
+                pass
 
+        # Huoltokulu: STARTER-koneille alennus, muille täysi hinta
         maint_starter = (MAINT_PER_AIRCRAFT * STARTER_MAINT_DISCOUNT) * starter_planes
         maint_nonstarter = MAINT_PER_AIRCRAFT * max(0, total_planes - starter_planes)
         total_bill = (HQ_MONTHLY_FEE + maint_starter + maint_nonstarter).quantize(Decimal("0.01"))
 
-        print("\n💸 Kuukausilaskut erääntyivät!")
-        print(f"   🏢 HQ: {self._fmt_money(HQ_MONTHLY_FEE)}")
-        print(f"   🔧 Huollot ({total_planes} kpl): {self._fmt_money(maint_starter + maint_nonstarter)}")
-        print(f"   ➖ Yhteensä: {self._fmt_money(total_bill)}")
+        if not silent:
+            print("\n💸 Kuukausilaskut erääntyivät!")
+            print(f"   🏢 HQ: {self._fmt_money(HQ_MONTHLY_FEE)}")
+            print(f"   🔧 Huollot ({total_planes} kpl): {self._fmt_money(maint_starter + maint_nonstarter)}")
+            print(f"   ➖ Yhteensä: {self._fmt_money(total_bill)}")
 
+        # Maksu tai konkurssi
         if self.cash < total_bill:
-            print("💀 Rahat eivät riitä laskuihin. Yritys menee konkurssiin.")
+            if not silent:
+                print("💀 Rahat eivät riitä laskuihin. Yritys menee konkurssiin.")
             self._set_status("BANKRUPT")
             return
 
         try:
             self._add_cash(-total_bill)
-            print("✅ Laskut maksettu.")
+            if not silent:
+                print("✅ Laskut maksettu.")
         except Exception as e:
-            print(f"❌ Laskujen veloitus epäonnistui: {e}")
-            # Jos tässä epäonnistuu, ei muuteta statusta – voi yrittää uudelleen seuraavana päivänä
+            if not silent:
+                print(f"❌ Laskujen veloitus epäonnistui: {e}")
+
+    # ---------- Pikakelaus ---------
+
+    def fast_forward_days(self, days: int) -> None:
+        """
+        Etenee 'days' päivää eteenpäin, hiljaisesti (ei tulostuksia per päivä).
+        Pysähtyy, jos:
+          - status muuttuu BANKRUPT
+          - saavutetaan tai ylitetään SURVIVAL_TARGET_DAYS (status asetetaan VICTORY, jos vielä ACTIVE)
+        Tulostaa lopuksi yhteenvedon.
+        """
+        days = max(0, int(days))
+        arrived_total = 0
+        earned_total = Decimal("0.00")
+
+        for _ in range(days):
+            summary = self.advance_to_next_day(silent=True)
+            arrived_total += int(summary.get("arrivals", 0))
+            earned_total += _to_dec(summary.get("earned", 0))
+            if self.status == "BANKRUPT":
+                break
+            if self.current_day >= SURVIVAL_TARGET_DAYS:
+                if self.status == "ACTIVE":
+                    self._set_status("VICTORY")
+                break
+
+        print(f"⏩ Pikakelaus valmis. Päivä nyt {self.current_day}.")
+        print(f"   ✈️ Saapuneita lentoja: {arrived_total} | 💶 Yhteensä ansaittu: {self._fmt_money(earned_total)}")
+
+    def fast_forward_until_first_return(self, max_days: int = 365) -> None:
+        """
+        Etenee päivä kerrallaan, kunnes ensimmäinen lento palaa (eli sinä päivänä on ≥1 saapuminen).
+        - Turvaraja: max_days (ettei jäädä ikuiseen looppiin).
+        - Pysähtyy myös konkurssiin tai voittoon (asetetaan VICTORY, jos vielä ACTIVE).
+        - Jos ei ole käynnissä olevia lentoja, ilmoitetaan ja palataan heti.
+        """
+        # Varmista kelvollinen raja
+        max_days = max(1, int(max_days))
+
+        # Esitarkistus: onko yhtään käynnissä olevaa lentoa?
+        enroute_count = 0
+        yhteys = get_connection()
+        try:
+            try:
+                kursori = yhteys.cursor()
+                kursori.execute(
+                    "SELECT COUNT(*) FROM flights WHERE save_id = %s AND status = 'ENROUTE'",
+                    (self.save_id,),
+                )
+                r = kursori.fetchone()
+                enroute_count = int(r[0] if r else 0)
+            finally:
+                try:
+                    kursori.close()
+                except Exception:
+                    pass
+        finally:
+            try:
+                yhteys.close()
+            except Exception:
+                pass
+
+        if enroute_count == 0:
+            print("ℹ️  Ei käynnissä olevia lentoja. Aloita ensin tehtävä, jotta on jotain mihin palata.")
+            return
+
+        days_advanced = 0
+        earned_total = Decimal("0.00")
+        stop_reason = "max"  # oletus: maksimipäiväraja täyttyi
+
+        for _ in range(max_days):
+            summary = self.advance_to_next_day(silent=True)
+            days_advanced += 1
+            earned_total += _to_dec(summary.get("earned", 0))
+
+            # 1) Ensimmäiset saapumiset havaittu
+            if int(summary.get("arrivals", 0)) > 0:
+                stop_reason = "arrival"
+                break
+            # 2) Konkurssi
+            if self.status == "BANKRUPT":
+                stop_reason = "bankrupt"
+                break
+            # 3) Voitto (selviytymisraja saavutettu)
+            if self.current_day >= SURVIVAL_TARGET_DAYS:
+                if self.status == "ACTIVE":
+                    self._set_status("VICTORY")
+                stop_reason = "victory"
+                break
+
+        # Yhteenveto
+        if stop_reason == "arrival":
+            print(f"🎯 Ensimmäinen lento palasi. Päiviä edetty: {days_advanced}, päivä nyt {self.current_day}.")
+        elif stop_reason == "bankrupt":
+            print(f"💀 Konkurssi keskeytti. Päiviä edetty: {days_advanced}, päivä nyt {self.current_day}.")
+        elif stop_reason == "victory":
+            print(f"🏆 Selviytymisraja saavutettu. Päiviä edetty: {days_advanced}, päivä nyt {self.current_day}.")
+        else:  # "max"
+            print(f"⏹️  Ei paluuta {max_days} päivän aikana. Päivä nyt {self.current_day}.")
+
+        print(f"   💶 Kertynyt ansio: {self._fmt_money(earned_total)}")
+        input("\n↩︎ Enter jatkaaksesi...")
 
     # ---------- DB: apurit ----------
 

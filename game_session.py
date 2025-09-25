@@ -470,7 +470,8 @@ class GameSession:
         pages = [
             "Yö on pimeä ja terminaalin neonit hehkuvat. Perit vanhan lentofirman nimen ja velkasalkun.",
             "Iso-isäsi jätti sinulle yhden DC-3:n muistoksi – se on kestänyt vuosikymmeniä, kestäisikö vielä yhden?",
-            f"Tavoitteesi: pidä firma hengissä {SURVIVAL_TARGET_DAYS} päivää. Joka 30. päivä maksat HQ:n ja koneiden huollot.",
+            f"Tavoitteesi: pidä firma hengissä {SURVIVAL_TARGET_DAYS} päivää. Joka 30. päivä maksat palkat ja koneiden huollot.",
+            "Toivottavasti kaikki menee hyvin...",
             "Pilvet raottuvat: markkinat odottavat reittejä, rahtia ja rohkeita päätöksiä. Aika nousta.",
         ]
         _icon_title("Prologi")
@@ -867,9 +868,6 @@ class GameSession:
 
     # ---------- Tehtävät ja lentologiikka (tiivistetty, painopisteet ennallaan) ----------
 
-    # ... (tässä säilytetään aiempi tehtävälogiikkasi, alla vain pieniä selkeytyksiä ja
-    #      yhteys/kursori -yhtenäistämistä; jätetään runko ennalleen jotta diff on maltillinen) ...
-
     def _get_airport_coords(self, ident: str):
         """
         Hae kentän koordinaatit airport-taulusta.
@@ -958,18 +956,38 @@ class GameSession:
 
     def _random_task_offers_for_plane(self, plane, count: int = 5):
         """
-        Generoi 'count' kpl tämän päivän tarjouksia koneelle.
-        (Käytetään nykyinen koodi – lisätty vain kommentit ja pieni siistintä)
+        Generoi 'count' kpl tämän päivän tarjouksia annetulle koneelle.
+        - Aikaperusta: vähintään 1 pv (base_days >= 1).
+        - Jos rahti ylittää kapasiteetin: trips = ceil(payload / capacity),
+          total_days = base_days * trips (shuttle).
+        - Palkkio: (payload * PER_KG + distance * PER_KM) * effective_eco
+          ja varmistetaan ettei palkkio mene alle MIN_TASK_REWARD.
         """
         import math
         import random
+        from decimal import Decimal
+
+        # 1) Kerroinparametrit – MUOKKAA PALKKIOITA TÄSSÄ
+        PER_KG = Decimal("8.60")  # palkkio €/kg
+        PER_KM = Decimal("5.80")  # palkkio €/km
+        MIN_TASK_REWARD = Decimal("250.00")  # alin sallittu palkkio tehtävälle
+        ECO_MIN = Decimal("0.10")  # eco-kerroin ei koskaan alle 0.10
+        ECO_MAX = Decimal("5.00")  # eikä myöskään kohtuuttoman suuri
 
         dep_ident = plane["current_airport_ident"]
         speed_kts = float(plane.get("cruise_speed_kts") or 200.0)
         speed_km_per_day = max(1.0, speed_kts * 1.852 * 24.0)
         capacity = int(plane.get("base_cargo_kg") or 0) or 1
-        eco_mult = float(plane.get("eco_fee_multiplier") or 1.0)
 
+        # 2) Käytä efektiivistä eco-kerrointa (malli + upgradet), ja rajaa järkevälle välille
+        try:
+            eff_eco = Decimal(str(get_effective_eco_for_aircraft(plane["aircraft_id"])))
+        except Exception:
+            # fallback: käytä mallin ecoa, jos funktio ei saatavilla
+            eff_eco = Decimal(str(plane.get("eco_fee_multiplier") or 1.0))
+        eff_eco = max(ECO_MIN, min(ECO_MAX, eff_eco))
+
+        # Haetaan ylikapasiteettia varten enemmän kohteita (count*2), jos osa karsiutuu
         dests = self._pick_random_destinations(count * 2, dep_ident)
         offers = []
 
@@ -978,13 +996,17 @@ class GameSession:
                 break
 
             dest_ident = d["ident"]
+
+            # 3) Koordinaatit – jos puuttuu, ohitetaan
             dep_xy = self._get_airport_coords(dep_ident)
             dst_xy = self._get_airport_coords(dest_ident)
             if not (dep_xy and dst_xy):
                 continue
 
+            # 4) Etäisyys (km)
             dist_km = self._haversine_km(dep_xy[0], dep_xy[1], dst_xy[0], dst_xy[1])
 
+            # 5) Generoi rahti etäisyyden mukaan (saa mennä yli kapasiteetin → useita reissuja)
             if dist_km < 500:
                 payload = random.randint(max(1, capacity // 2), max(1, capacity * 3))
             elif dist_km < 1500:
@@ -992,16 +1014,23 @@ class GameSession:
             else:
                 payload = random.randint(capacity * 2, capacity * 6)
 
+            # 6) Kesto ja shuttle-lähtöjen määrä
             base_days = max(1, math.ceil(dist_km / speed_km_per_day))
             trips = max(1, math.ceil(payload / capacity))
             total_days = base_days * trips
 
-            per_kg = 3.6
-            per_km = 1.8
-            raw_reward = (payload * per_kg + dist_km * per_km) * eco_mult
-            reward = Decimal(str(round(raw_reward, 2)))
-            penalty = (reward * Decimal("0.30")).quantize(Decimal("0.01"))
+            # 7) Palkkio: per_kg + per_km, kerrotaan eco:lla, lattia varmistaa ettei negatiivinen
+            base_reward = (Decimal(payload) * PER_KG) + (Decimal(dist_km) * PER_KM)
+            reward = (base_reward * eff_eco).quantize(Decimal("0.01"))
+            if reward < MIN_TASK_REWARD:
+                reward = MIN_TASK_REWARD
 
+            # 8) Sakko: 30 % palkkiosta, mutta ei koskaan negatiivinen
+            penalty = (reward * Decimal("0.30")).quantize(Decimal("0.01"))
+            if penalty < Decimal("0.00"):
+                penalty = Decimal("0.00")
+
+            # 9) Deadline = kokonaiskesto + puskuri (puolikas trips, vähintään 1)
             buffer_days = max(1, trips // 2)
             deadline = self.current_day + total_days + buffer_days
 
@@ -1885,7 +1914,7 @@ class GameSession:
 
     def _fmt_money(self, amount) -> str:
         """
-        Muotoile rahasumma euroiksi kahdella desimaalilla, suomalainen tyyli.
+        Muotoile rahasumma euroiksi kahdella desimaalilla.
         Esim. Decimal('1234567.8') -> '1 234 567,80 €'
         """
         d = _to_dec(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)

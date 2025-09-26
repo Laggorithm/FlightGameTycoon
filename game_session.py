@@ -199,15 +199,19 @@ def compute_effective_eco_multiplier(aircraft_id: int, base_eco_multiplier) -> f
       effective = max(eco_floor, base_eco * (eco_factor_per_level ** level))
     Palauttaa floatin käyttöä varten (esim. palkkiolaskennassa).
     """
+    base = abs(base_eco_multiplier)
     state = get_current_aircraft_upgrade_state(aircraft_id, UPGRADE_CODE)
     level = int(state["level"])
     factor = state["eco_factor_per_level"]
-    floor = state["eco_floor"]
-
-    base_eco = _to_dec(base_eco_multiplier if base_eco_multiplier is not None else 1.0)
-    effective = base_eco * (factor ** _to_dec(level))
-    if effective < floor:
-        effective = floor
+    ceiling = state["eco_floor"]
+    effective = 0.0
+    if effective < ceiling:
+        if level > 0:
+            for i in range(level + 1):
+                effective = base + 0.05
+        else:
+            effective = base + 0.01
+    print(effective)
     return float(effective)
 
 
@@ -278,8 +282,8 @@ def apply_aircraft_upgrade(
 
 def get_effective_eco_for_aircraft(aircraft_id: int) -> float:
     """
-    Hakee mallin perus-eco-kertoimen ja soveltaa päivitystasot.
-    Palauttaa floatin (efektiivinen eco).
+    Fetches the base eco multiplier for the aircraft model and applies upgrades.
+    Returns the effective eco multiplier as a float.
     """
     sql = """
         SELECT am.eco_fee_multiplier
@@ -292,7 +296,14 @@ def get_effective_eco_for_aircraft(aircraft_id: int) -> float:
         kursori.execute(sql, (aircraft_id,))
         r = kursori.fetchone()
 
-    base_eco = (r[0] if r and not isinstance(r, dict) else (r["eco_fee_multiplier"] if r else 1.0))
+    # Save the fetched value to base_eco, supporting tuple and dict results
+    if r is None:
+        base_eco = 1.0
+    elif isinstance(r, dict):
+        base_eco = r.get("eco_fee_multiplier", 1.0)
+    else:  # assume tuple
+        base_eco = r[0] if r[0] is not None else 1.0
+
     return compute_effective_eco_multiplier(aircraft_id, base_eco)
 
 

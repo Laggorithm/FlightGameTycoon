@@ -208,9 +208,9 @@ def compute_effective_eco_multiplier(aircraft_id: int, base_eco_multiplier) -> f
     if effective < ceiling:
         if level > 0:
             for i in range(level + 1):
-                effective = base + 0.05
+                effective = base + factor
         else:
-            effective = base + 0.01
+            effective = base
     print(effective)
     return float(effective)
 

@@ -13,7 +13,7 @@ from decimal import Decimal
 UPGRADE_CODE: str = "ECO"
 
 # ECO-päivityksen oletusparametrit (talletetaan joka riville turvaan)
-DEFAULT_ECO_FACTOR_PER_LEVEL: Decimal = Decimal("0.1")  # -10 % per taso (korottaa kannattavuutta vähentämällä veroja/fee-maksuja)
+DEFAULT_ECO_FACTOR_PER_LEVEL: Decimal = Decimal("0.05")  # 5% per taso (korottaa kannattavuutta vähentämällä veroja/fee-maksuja)
 DEFAULT_ECO_FLOOR: Decimal = Decimal("0.50")             # Ekokerroin ei nostaa 0.5 yli, niin ettei pelajaa saa liikaa bonustaa
 
 # Hinnastokonfiguraatio ECO-upgradeihin (suositus; voidaan muuttaa balansoimiseksi):

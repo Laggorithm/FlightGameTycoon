@@ -16,7 +16,7 @@
 import math
 import random
 import string
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Any
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime
 from utils import get_connection
@@ -468,6 +468,49 @@ def get_effective_eco_for_aircraft(aircraft_id: int) -> float:
 
 
     # ---------- Base upgrade ----------
+
+def fetch_owned_bases(save_id: int) -> List[Dict[str, Any]]:
+    """
+    Palauttaa omistetut tukikohdat id-pohjaisessa muodossa tälle tallennukselle.
+    Avainkentät:
+      - base_id (int)
+      - base_ident (str)
+      - base_name (str)
+      - purchase_cost (Decimal/float)
+    """
+    sql = """
+        SELECT base_id, base_ident, base_name, purchase_cost
+        FROM owned_bases
+        WHERE save_id = %s
+        ORDER BY acquired_day ASC, base_id ASC
+    """
+    with get_connection() as yhteys:
+        try:
+            kursori = yhteys.cursor(dictionary=True)
+        except TypeError:
+            kursori = yhteys.cursor()
+        kursori.execute(sql, (save_id,))
+        rows = kursori.fetchall() or []
+
+    owned: List[Dict[str, Any]] = []
+    for r in rows:
+        if isinstance(r, dict):
+            owned.append({
+                "base_id": r["base_id"],
+                "base_ident": r["base_ident"],
+                "base_name": r["base_name"],
+                "purchase_cost": r.get("purchase_cost") or 0,
+            })
+        else:
+            owned.append({
+                "base_id": r[0],
+                "base_ident": r[1],
+                "base_name": r[2],
+                "purchase_cost": r[3] if len(r) > 3 and r[3] is not None else 0,
+            })
+    return owned
+
+
 def fetch_base_current_level_map(base_ids: List[int]) -> Dict[int, str]:
     """
     Palauttaa { base_id: viimeisin upgrade_code } (SMALL/MEDIUM/LARGE/HUGE).
@@ -492,32 +535,6 @@ def fetch_base_current_level_map(base_ids: List[int]) -> Dict[int, str]:
         kursori.execute(sql, tuple(base_ids))
         rivit = kursori.fetchall() or []
     return {r["base_id"]: r["upgrade_code"] for r in rivit}
-
-def fetch_base_current_level_map(base_ids: List[int]) -> Dict[int, str]:
-    """
-    Palauttaa { base_id: viimeisin upgrade_code } (SMALL/MEDIUM/LARGE/HUGE).
-    Jos tukikohdalla ei ole päivityksiä, sitä ei ole dictissä (oletetaan SMALL).
-    """
-    if not base_ids:
-        return {}
-
-    placeholders = ",".join(["%s"] * len(base_ids))
-    sql = f"""
-        SELECT bu.base_id, bu.upgrade_code
-        FROM base_upgrades bu
-        JOIN (
-            SELECT base_id, MAX(base_upgrade_id) AS maxid
-            FROM base_upgrades
-            WHERE base_id IN ({placeholders})
-            GROUP BY base_id
-        ) x ON x.base_id = bu.base_id AND x.maxid = bu.base_upgrade_id
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor(dictionary=True)
-        kursori.execute(sql, tuple(base_ids))
-        rivit = kursori.fetchall() or []
-    return {r["base_id"]: r["upgrade_code"] for r in rivit}
-
 
 def insert_base_upgrade(base_id: int, next_level_code: str, cost, day: int) -> None:
     """
@@ -914,7 +931,27 @@ class GameSession:
             print("❌ Osto epäonnistui.")
         input("\n↩︎ Enter jatkaaksesi...")
 
-    # ---------- Päivitykset: Base & ECO ----------
+    # ---------- Päivitysten päävalikko ----------
+
+    def upgrade_menu(self) -> None:
+        """
+        Päävalikko päivityksille.
+        """
+        _icon_title("Päivitysvalikko")
+        print("1) 🏢 Tukikohta")
+        print("2) ♻️  Lentokone (ECO)")
+        choice = input("Valinta numerolla (tyhjä = peruuta): ").strip()
+
+        if not choice:
+            return
+        if choice == "1":
+            self.upgrade_base_menu()
+        elif choice == "2":
+            self.upgrade_aircraft_menu()
+        else:
+            print("⚠️  Virheellinen valinta.")
+
+    # ---------- Päivitykset: Lentokoneet ECO ----------
 
     def upgrade_aircraft_menu(self) -> None:
         """
@@ -1054,18 +1091,22 @@ class GameSession:
             ("LARGE", "HUGE"): Decimal("1.50"),
         }
 
+        # 1) Hae tukikohdat (id-pohjainen)
         bases = fetch_owned_bases(self.save_id)
         if not bases:
             print("ℹ️  Sinulla ei ole vielä tukikohtia.")
             input("\n↩︎ Enter jatkaaksesi...")
             return
 
-        level_map = fetch_base_current_level_map([b["base_id"] for b in bases])
+        # 2) Hae nykyiset tasot id-listalla
+        base_ids = [b["base_id"] for b in bases]
+        level_map = fetch_base_current_level_map(base_ids)
 
         _icon_title("Tukikohtien päivitykset")
         menu_rows = []
         for i, b in enumerate(bases, start=1):
-            current = level_map.get(b["base_id"], "SMALL")
+            bid = b["base_id"]
+            current = level_map.get(bid, "SMALL")
             cur_idx = BASE_LEVELS.index(current)
 
             if cur_idx >= len(BASE_LEVELS) - 1:
@@ -1099,7 +1140,8 @@ class GameSession:
             return
 
         if self.cash < _to_dec(cost):
-            print(f"❌ Kassa ei riitä päivitykseen. Tarvitset {self._fmt_money(cost)}, sinulla on {self._fmt_money(self.cash)}.")
+            print(
+                f"❌ Kassa ei riitä päivitykseen. Tarvitset {self._fmt_money(cost)}, sinulla on {self._fmt_money(self.cash)}.")
             input("\n↩︎ Enter jatkaaksesi...")
             return
 
@@ -1110,32 +1152,12 @@ class GameSession:
             print("❎ Peruutettu.")
             return
 
-        try:
-            insert_base_upgrade(b["base_id"], nxt, cost, self.current_day)
-            self._add_cash(-_to_dec(cost))
-            print("✅ Tukikohdan päivitys tehty.")
-        except Exception as e:
-            print(f"❌ Päivitys epäonnistui: {e}")
+        # 3) Kirjaa päivitys valmiilla inserttifunktiolla (base_id-pohjainen)
+        insert_base_upgrade(b["base_id"], nxt, cost, self.current_day)
 
+        self._add_cash(-_to_dec(cost))
+        print("✅ Tukikohdan päivitys tehty.")
         input("\n↩︎ Enter jatkaaksesi...")
-
-    def upgrade_menu(self) -> None:
-        """
-        Päävalikko päivityksille.
-        """
-        _icon_title("Päivitysvalikko")
-        print("1) 🏢 Tukikohta")
-        print("2) ♻️  Lentokone (ECO)")
-        choice = input("Valinta numerolla (tyhjä = peruuta): ").strip()
-
-        if not choice:
-            return
-        if choice == "1":
-            self.upgrade_base_menu()
-        elif choice == "2":
-            self.upgrade_aircraft_menu()
-        else:
-            print("⚠️  Virheellinen valinta.")
 
     # ---------- Tehtävät ja lentologiikka (tiivistetty, painopisteet ennallaan) ----------
 
@@ -1217,13 +1239,13 @@ class GameSession:
         """
         Haversine-kaava kahden pisteen etäisyyteen (km).
         """
-        R = 6371.0
+        r = 6371.0
         phi1, phi2 = math.radians(lat1), math.radians(lat2)
         dphi = math.radians(lat2 - lat1)
         dl = math.radians(lon2 - lon1)
         a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
         c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-        return R * c
+        return r * c
 
     def _resolve_effective_eco_multiplier(self, aircraft_id, base_eco_model) -> Decimal:
         """

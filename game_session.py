@@ -732,7 +732,8 @@ class GameSession:
             base_id=base_id,
             nickname="Iso-isän DC-3",
         )
-        print("🎁 Iso-isä lahjoitti Douglas DC-3 -koneen. Onnea matkaan!")
+        print("🎁 Iso-isä lahjoitti sinulle Douglas DC-3 -koneen. Onnea matkaan!")
+        input("↩︎ Enter jatkaa...")
 
     # ---------- Päävalikko ----------
 
@@ -748,10 +749,10 @@ class GameSession:
                 f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident}")
             print("1) 📋 Listaa koneet")
             print("2) 🛒 Kauppa (osta kone)")
-            print("3) ♻️  Päivitä konetta (ECO)")
+            print("3) ♻️ Osta päivityksiä")
             print("4) 📦 Aktiiviset tehtävät")
             print("5) ➕ Aloita uusi tehtävä")
-            print("6) ⏭️  Seuraava päivä")
+            print("6) ⏭️ Seuraava päivä")
             # Uudet pikakelausvaihtoehdot
             print("7) ⏩ Etene X päivää")
             print("8) 🎯 Etene kunnes ensimmäinen kone palaa")

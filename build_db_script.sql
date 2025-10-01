@@ -1,5 +1,5 @@
 -- --------------------------------------------------------
--- Flight Game database schema
+-- Flight Game database schema, ENSIN ALLE PITÄÄ OLLA LADATTUNA PROJECT BASE, airport ja country taulut.
 -- --------------------------------------------------------
 
 -- Pudotetaan taulut turvallisessa järjestyksessä

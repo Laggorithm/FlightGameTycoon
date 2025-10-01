@@ -1,5 +1,5 @@
 -- --------------------------------------------------------
--- Flight Game database schema, ENSIN ALLE PITÄÄ OLLA LADATTUNA PROJECT BASE, airport ja country taulut.
+-- Flight Game database schema
 -- --------------------------------------------------------
 
 -- Pudotetaan taulut turvallisessa järjestyksessä
@@ -99,13 +99,13 @@ CREATE TABLE aircraft (
 CREATE TABLE random_events (
   event_id INT AUTO_INCREMENT PRIMARY KEY,
   event_name VARCHAR(100) NOT NULL,
-  category ENUM('GOOD','BAD','CATASTROPHIC') NOT NULL,
   description TEXT,
-  probability DECIMAL(5,4), -- esim. 0.2500 = 25%
-  effect TEXT,
-  duration_days INT,
-  sound_file VARCHAR(255),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  chance_max INT,
+  package_multiplier DOUBLE,
+  plane_damage INT,
+  days DOUBLE,
+  duration INT,
+  sound_file VARCHAR(255)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 -- --------------------------------------------------------
@@ -188,19 +188,27 @@ CREATE TABLE base_upgrades (
 -- --------------------------------------------------------
 -- Random events (esimerkkidata)
 -- --------------------------------------------------------
-INSERT INTO random_events (event_name, category, description, probability, effect, duration_days, sound_file)
-VALUES
-('Volcano', 'BAD', 'Have to wait 1–7 days (random)', 0.0500, 'Delay random 1–7 days', 7, 'sounds/volcano.mp3'),
-('Aliens', 'BAD', 'Chance aliens take interest in your goods', 0.0010, 'Lose 10% of packages for 3 days or lose 1 worker/day', 3, 'sounds/aliens.mp3'),
-('Freezing Cold', 'BAD', 'Wings freeze before or during flight', 0.2000, 'Require fee/unfreeze mid-flight, up to 20% crash chance', 2, 'sounds/freezing.mp3'),
-('Storm Clouds', 'BAD', 'Packages damaged, possible lightning hit', 0.2500, 'Lose % reward, 1% crash chance, 20% repair needed', 1, 'sounds/storm.mp3'),
-('Hurricane', 'BAD', 'Severe turbulence', 0.1000, '40% crash chance and damage packages', 1, 'sounds/hurricane.mp3'),
-('Meteor', 'CATASTROPHIC', 'Meteor strike destroys plane', 0.0100, 'Instant plane loss', 0, 'sounds/meteor.mp3'),
-('Worker Strikes', 'BAD', 'Workers go on strike', 0.0500, 'Wait 1–3 days (random)', 3, 'sounds/strike.mp3'),
-('Perfect Day', 'GOOD', 'Clear skies, optimal conditions', 0.0500, '0.5x travel time', 1, 'sounds/perfect_day.mp3'),
-('Sunny Sky', 'GOOD', 'Mild weather boost', 0.0800, '0.8x travel time', 1, 'sounds/sunny.mp3'),
-('Favorable Winds', 'GOOD', 'Strong tailwind', 0.0700, '0.7x travel time', 1, 'sounds/wind.mp3'),
-('Mile High Club', 'GOOD', 'Crew distracted mid-flight', 0.0200, 'Random: -1 day, +1 day, or plane crash (33/33/33)', 1, 'sounds/milehigh.mp3');
+INSERT INTO random_events (
+  event_name,
+  description,
+  chance_max,
+  package_multiplier,
+  plane_damage,
+  days,
+  duration,
+  sound_file
+) VALUES
+('Volcano', NULL, 50, 0.53, 40, 3.0, 1, NULL),
+('Aliens', NULL, 100, 0.9, 10, 0.0, 7, NULL),
+('Freezing Cold', NULL, 10, 0.8, 7, 1.0, 2, NULL),
+('Storm Clouds', NULL, 5, 0.7, 15, 1.0, 3, NULL),
+('Hurricane', NULL, 15, 0.6, 25, 2.0, 1, NULL),
+('Meteor', NULL, 70, 0.0, 100, 0.0, 1, NULL),
+('Workers Strike', NULL, 6, 0.5, 0, 2.0, 3, NULL),
+('Sunny Sky', NULL, 3, 1.0, 0, 0.8, 1, NULL),
+('Favorable Winds', NULL, 7, 1.0, 0, 0.7, 2, NULL),
+('Best Day Ever', NULL, 15, 1.5, 0, 0.5, 1, NULL),
+('Normal Day', NULL, 1, 1.0, 0, 1.0, 1, NULL);
 
 -- --------------------------------------------------------
 -- Starter Aircraft (ei listata kaupassa; vain uuden pelin lahja)

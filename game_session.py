@@ -51,6 +51,7 @@ from upgrade_config import (
     HQ_MONTHLY_FEE,
     MAINT_PER_AIRCRAFT,
     STARTER_MAINT_DISCOUNT,
+    REPAIR_COST_PER_PERCENT,
 
     # Peli-”tavoite”
     SURVIVAL_TARGET_DAYS,
@@ -1077,6 +1078,126 @@ class GameSession:
             print(f"❌ Päivitys epäonnistui: {e}")
 
         input("\n↩︎ Enter jatkaaksesi...")
+
+        #Haetaan rikkinäiset koneet
+        #Vain tämän tallennuksen koneet, condition percent < 100
+        #Tuodaan mukaan mallin nimi ja tyyppi jotta saadaan informatiivinen rivi
+    def _fetch_broken_planes(self) -> List[dict]:
+        sql = """
+            SELECT 
+                a.aircraft_id,
+                a.registration,
+                a.status,
+                a.condition_percent,
+                am.model_name,
+                am.model_code,
+            FROM aircraft a
+            JOIN aircraft_models am ON am.model_code = a.model_code
+            WHERE a.save_id = %s
+            AND (a.sold_day IS NULL OR a.sold_day = 0)
+            AND a.condition_percent IS NOT NULL 
+            AND a.condition_percent < 100
+            ORDER BY a.aircraft_id
+        """
+        with get_connection() as yhteys:
+            kursori = yhteys.cursor(dictionary=True)
+            kursori.execute(sql, (self.save_id,))
+            return kursori.fetchall() or []
+
+    # Yhden koneen korjaus täyteen kuntoon
+    # Prosessi
+    # Ensin haetaan kone, (lukitus/FOR UPDATE)
+    # Lasketaan puuttuva kunto (100 - condition_percent)
+    # Lasketaan korjaukselle hinta (REPAIR_COST_PER_PERCENT configin mukaan)
+    # Lukitaan kassa (SELECT / FOR UPDATE), tarkistetaan riittävyys
+    # Päivitetään koneeseen condition_percent = 100, status = "IDLE"
+    # Hinta kassasta yhdellä UPDATE:lla näin pidetään self.cash synkassa
+    #
+    # Palauttaa
+    # True, jos korjaus onnistui
+    # False, jos kassa ei riittänyt tai kone on "BUSY"
+
+    def repair_aircraft_to_full(self, aircraft_id: int) -> bool:
+        yhteys = get_connection()
+        try:
+            kursori = yhteys.cursor(dictionary=True)
+            yhteys.start_transaction()
+
+            # Lukitaan kone
+            kursori.execute(
+                "SELECT condition_percent, status FROM aircraft WHERE aircraft_id = %s FOR UPDATE", (aircraft_id,),
+            )
+
+            result = kursori.fetchone()
+            if not result:
+                yhteys.rollback()
+                print("❌ Konetta ei löytynyt.")
+                return False
+
+            cond = int(result.get("condition_percent") or 0)
+            status_now = (result.get("status") or "IDLE").upper()
+
+            # Ei voida huoltaa jos kone on lennolla
+            if status_now == "BUSY":
+                yhteys.rollback()
+                print("❌ Kone on lennolla, sitä ei voi korjata nyt.")
+                return False
+
+            # Ei tarvitse huoltaa
+            if cond >= 100:
+                yhteys.rollback()
+                print("✔️ Kone on jo täydessä kunnossa.")
+                return True
+
+            # Lasketaan puuttuva kunto
+            missing = 100 - cond
+            repair_cost = (Decimal(missing) * REPAIR_COST_PER_PERCENT).quantize(Decimal("0.01"))
+
+
+            # Lukitaan kassa ja tarkistetaan rahojen riittävyys
+            kursori.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
+            cash_result = kursori.fetchone()
+            cash_now = _to_dec(cash_result["cash"] if cash_result and "cash" in cash_result else 0)
+
+            if cash_now < repair_cost:
+                yhteys.rollback()
+                print("❌ Kassa ei riitä.")
+                return False
+
+            kursori.execute(
+                "UPDATE aircraft SET condition_percent = 100, status = 'IDLE' WHERE aircraft_id = %s", (aircraft_id,),
+            )
+
+            # Lasketaan uusi kassa
+            new_cash = (cash_now - repair_cost).quantize(Decimal("0.01"),rounding=ROUND_HALF_UP)
+            kursori.execute(
+                "UPDATE game_saves SET cash = %s, updated_at = %s WHERE save_id = %s",
+                (new_cash, datetime.utcnow(), self.save_id),
+            )
+
+            yhteys.commit()
+
+            self.cash = new_cash
+            print(f"Kone {aircraft_id} on korjattu täyteen kuntoon. Se maksoi {self._fmt_money(repair_cost)}.")
+            return True
+        except Exception as err:
+            yhteys.rollback()
+            print(f"❌ Korjaus epäonnistui: {err}")
+            return False
+        finally:
+            try:
+                kursori.close()
+            except Exception:
+                pass
+            try:
+                yhteys.close()
+            except Exception:
+                pass
+
+
+    # Huoltovalikko
+
+
 
     # ---------- Tukikohdan päivitykset ----------
 

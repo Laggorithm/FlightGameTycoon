@@ -22,7 +22,6 @@ def _icon_title(title: str) -> None:
     print(f"║ {title} ║")
     print(f"╚{bar}╝")
 
-
 def list_recent_saves(limit: int = 20):
     """
     Listaa viimeisimmät tallennukset – nopea katsaus latausvalikkoon.
@@ -105,9 +104,28 @@ def start_new_game():
         print("⚠️  Virheellinen kassa, käytän oletusta 300000.")
         cash = 300000.0
 
-    rng_in = input("🎲 RNG siemen (tyhjä = satunnainen/None): ").strip()
-    rng_seed = int(rng_in) if rng_in else None
+    # ===== RNG-SIEMENEN KYSYMINEN =====
+    # Tämä on tärkein kohta käyttäjän kannalta!
+    print("\n🎲 RNG-siemen (satunnaislukugeneraattori):")
+    print("   • Tyhjä = Normaali satunnainen peli")
+    print("   • Numero (esim. 42) = Deterministinen peli")
+    print("   • Sama siemen tuottaa AINA samat tapahtumat")
+    print("   • Hyödyllinen testaukseen ja kilpailuihin\n")
 
+    rng_in = input("Syötä siemen (tyhjä = satunnainen): ").strip()
+
+    # Jos käyttäjä syötti numeron, käytä sitä. Muuten None = satunnainen.
+    if rng_in:
+        try:
+            rng_seed = int(rng_in)
+            print(f"✅ Siemen {rng_seed} asetettu - Peli on nyt deterministinen!")
+        except ValueError:
+            print("⚠️  Virheellinen siemen, käytetään satunnaista peliä.")
+            rng_seed = None
+    else:
+        rng_seed = None
+        print("✅ Satunnainen peli valittu")
+#
     try:
         gs = GameSession.new_game(
             name=name,

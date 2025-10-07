@@ -65,9 +65,8 @@ import string
 from typing import List, Optional, Dict, Set
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime
-from setuptools.config.setupcfg import configuration_to_dict
 from utils import get_connection
-from airplane import init_airplanes, upgrade_airplane as db_upgrade_airplane  # (olemassa projektissasi)
+from airplane import init_airplanes, upgrade_airplane as db_upgrade_airplane
 
 # Konfiguraatiot yhdessä paikassa
 from upgrade_config import (
@@ -1022,11 +1021,11 @@ class GameSession:
 
         yhteys = get_connection()
         try:
-            k = yhteys.cursor(dictionary=True)
+            kursori = yhteys.cursor(dictionary=True)
             yhteys.start_transaction()
 
-            placeholders = ",".join(["%s"] * len(aircraft_ids)
-            k.execute(
+            placeholders = ",".join(["%s"] * len(aircraft_ids))
+            kursori.execute(
                 f"""
                 SELECT aircraft_id, condition_percent, status 
                 FROM aircraft 
@@ -1035,14 +1034,14 @@ class GameSession:
                 """,
                 tuple(aircraft_ids),
             )
-            rows = k.fetchall() or []
+            rows = kursori.fetchall() or []
 
             # 1. Laske korjaustarve ja kustannus
             total_cost = Decimal("0.00")
             repair_ids: List[int] = []
             for r in rows:
                 aid = int(r["aircraft_id"])
-                cond = int(r.get["condition_percent"]) or 0)
+                cond = int(r.get["condition_percent"]) or 0
                 status_now = (r.get["status"] or "IDLE").upper()
                 if status_now == "BUSY":
                     # Hypätään yli, lennolla olevaa konetta ei voi korjata
@@ -1061,8 +1060,8 @@ class GameSession:
                 return True
 
             # 2) Lukitse kassa ja tarkista
-            k.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
-            cr = k.fetchone()
+            kursori.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
+            cr = kursori.fetchone()
             cash_now = _to_dec(cr["cash"] if cr and "cash" in cr else 0)
 
             if cash_now < total_cost:
@@ -1072,7 +1071,7 @@ class GameSession:
 
             # 3) Päivitä koneet: set 100% / IDLE kaikille korjattaville
             placeholders2 = ",".join(["%s"] * len(repair_ids))
-            k.execute(
+            kursori.execute(
                 f"UPDATE aircraft SET conditon_percent = 100, status = 'IDLE' WHERE aircraft_id IN ({placeholders2})",
                 tuple(repair_ids),
             )
@@ -1080,7 +1079,7 @@ class GameSession:
 
             # 4) Veloita kertaotteella
             new_cash = (cash_now - total_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            k.execute(
+            kursori.execute(
                 "UPDATE game_saves SET cash = %s, updated_at = %s WHERE save_id = %s",
                 (new_cash, datetime.utcnow(), self.save_id),
             )
@@ -1121,10 +1120,10 @@ class GameSession:
         for i, r in enumerate(broken, start=1):
             cond = int(r.get("condition_percent") or 0)
             miss = max(0,100 - cond)
-            est = (Decimal(miss)) * REPAIR_COST_PER_PERCENT).quantize(Decimal("0.01"))
+            est = (Decimal(miss) * REPAIR_COST_PER_PERCENT).quantize(Decimal("0.01"))
             name = r.get("model_name") or r.get("model_code") or "Unknown"
             st = r.get("status") or "_"
-            print(f"{i:>2}") ✈️ {name} ({r.['registeration']}) | Kunto {cond}% | Status {st} | Arvio {self.fmt_money(est)}")
+            print(f"{i:>2} ✈️ {name} ({r.registeration}) | Kunto {cond}% | Status {st} | Arvio {self.fmt_money(est)}")
             print("\n0) Korjaa kaikki listalla")
 
             sel = input("Valitse numero (tyhjä = peruuta): ").strip()
@@ -1140,19 +1139,17 @@ class GameSession:
 
         try:
             idx = int(self)
-                if not (1 <= idx <= len(broken)):
+            if not (1 <= idx <= len(broken)):
                 print("⚠️  Virheellinen valinta.")
                 return
-        exept ValueError:
+        except ValueError:
             print("⚠️  Virheellinen valinta.")
 
-        r = broken[idx - 1]
-        ok = self._repair_aircraft_to_full_tx (int(r["aircraft_id"]))
-        if ok:
-            print("✅ Korjaus valmis.")
-        input("\n Enter jatkaaksesi...")
-
-
+            r = broken[idx - 1]
+            ok = self._repair_aircraft_to_full_tx (int(r["aircraft_id"]))
+            if ok:
+                print("✅ Korjaus valmis.")
+                input("\n Enter jatkaaksesi...")
 
 
 

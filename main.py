@@ -125,7 +125,7 @@ def start_new_game():
     else:
         rng_seed = None
         print("✅ Satunnainen peli valittu")
-
+#
     try:
         gs = GameSession.new_game(
             name=name,

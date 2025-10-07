@@ -468,7 +468,7 @@ class GameSession:
         except Exception:
             # ei kaadeta peliä, jos migraatio epäonnistuu – voidaan ajaa myöhemmin
             pass
-
+#
         yhteys = get_connection()
         kursori = yhteys.cursor()
         try:

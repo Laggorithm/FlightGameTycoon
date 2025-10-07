@@ -19,6 +19,9 @@ import string
 from typing import List, Optional, Dict, Set, Any
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime
+
+from setuptools.config.setupcfg import configuration_to_dict
+
 from utils import get_connection
 from airplane import init_airplanes, upgrade_airplane as db_upgrade_airplane
 
@@ -757,6 +760,7 @@ class GameSession:
             # Uudet pikakelausvaihtoehdot
             print("7) ⏩ Etene X päivää")
             print("8) 🎯 Etene kunnes ensimmäinen kone palaa")
+            print("9) 🔧 Koneiden huolto")
             print("0) 🚪 Poistu")
 
             choice = input("Valinta: ").strip()
@@ -826,6 +830,10 @@ class GameSession:
                         print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää. Voitit pelin!")
                         break
 
+            elif choice == "9":
+                # Huolto
+                self.maintenance_menu()
+
             elif choice == "0":
                 print("👋 Heippa!")
                 break
@@ -850,10 +858,13 @@ class GameSession:
 
         _icon_title("Laivasto")
         for i, p in enumerate(planes, start=1):
+            cond = getattr(p, "condition_percent", None)
+            cond = int(cond if cond is not None else 0)
+            broken_flag = " (RIKKI)" if cond < 100 else ""
             lvl = upgrade_levels.get(p.aircraft_id, 0)
             eco_now = get_effective_eco_for_aircraft(p.aircraft_id)
             print(f"\n#{i:>2} ✈️  {(getattr(p, 'model_name', None) or p.model_code)} ({p.registration}) @ {p.current_airport_ident}")
-            print(f"   💶 Ostohinta: {self._fmt_money(p.purchase_price)} | 🔧 Kunto: {p.condition_percent}% | 🧭 Status: {p.status}")
+            print(f"   💶 Ostohinta: {self._fmt_money(p.purchase_price)} | 🔧 Kunto: {cond}%{broken_flag} | 🧭 Status: {p.status}")
             print(f"   ⏱️ Tunnit: {p.hours_flown} h | 📅 Hankittu päivä: {p.acquired_day}")
             print(f"   ♻️  ECO-taso: {lvl} | Efektiivinen eco-kerroin: x {eco_now:.2f}")
 
@@ -1117,7 +1128,7 @@ class GameSession:
     # True, jos korjaus onnistui
     # False, jos kassa ei riittänyt tai kone on "BUSY"
 
-    def repair_aircraft_to_full(self, aircraft_id: int) -> bool:
+    def _repair_aircraft_to_full_tx(self, aircraft_id: int) -> bool:
         yhteys = get_connection()
         try:
             kursori = yhteys.cursor(dictionary=True)
@@ -1195,7 +1206,159 @@ class GameSession:
                 pass
 
 
+        # Massakorjaus (Korjaa useita koneita)
+        # Prosessi:
+        # - Lukitaan kaikki annetut koneet yhdellä kyselyllä (SELECT ... IN(...) FOR UPDATE)
+        # - Lasketaan yhteenlaskettu kustannus vain niille, jotka:
+        # * ovat alle 100% kunnossa,
+        # ja
+        # * eivät ole lennolla (BUSY)
+        # - Lukitaan kassa ja tarkistetaan riittävyys
+        # - Päivitetään kaikki korjattavat kerralla, veloitetaan kertaotteella
+        # - Tulostetaan yhteenveto
+        # Huom:
+        # Jos yhtään korjattavaa ei löydy, perutaan (palauttaa True).
+
+    def _repair_many_to_full_tx(self,aircraft_ids: List[int]) -> bool:
+        if not aircraft_ids:
+            print(" ℹ️ Ei valittuja koneita.")
+            return True
+
+        yhteys = get_connection()
+        try:
+            k = yhteys.cursor(dictionary=True)
+            yhteys.start_transaction()
+
+            placeholders = ",".join(["%s"] * len(aircraft_ids)
+            k.execute(
+                f"""
+                SELECT aircraft_id, condition_percent, status 
+                FROM aircraft 
+                WHERE aircraft_id in ({placeholders})
+                FOR UPDATE
+                """,
+                tuple(aircraft_ids),
+            )
+            rows = k.fetchall() or []
+
+            # 1. Laske korjaustarve ja kustannus
+            total_cost = Decimal("0.00")
+            repair_ids: List[int] = []
+            for r in rows:
+                aid = int(r["aircraft_id"])
+                cond = int(r.get["condition_percent"]) or 0)
+                status_now = (r.get["status"] or "IDLE").upper()
+                if status_now == "BUSY":
+                    # Hypätään yli, lennolla olevaa konetta ei voi korjata
+                    continue
+                if cond >= 100:
+                    continue
+                need = 100 - cond
+                total_cost += (Decimal(need) * REPAIR_PER_PERCENT)
+                repair_ids.append(aid)
+
+            total_cost = total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+            if not repair_ids:
+                yhteys.rollback()
+                print(" Ei korjattavaa.")
+                return True
+
+            # 2) Lukitse kassa ja tarkista
+            k.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
+            cr = k.fetchone()
+            cash_now = _to_dec(cr["cash"] if cr and "cash" in cr else 0)
+
+            if cash_now < total_cost:
+                yhteys.rollback()
+                print(f"Kassa ei riitä kaikkien korjaamiseen. Tarvitaan {self._fmt_money(total_cost)}.")
+                return False
+
+            # 3) Päivitä koneet: set 100% / IDLE kaikille korjattaville
+            placeholders2 = ",".join(["%s"] * len(repair_ids))
+            k.execute(
+                f"UPDATE aircraft SET conditon_percent = 100, status = 'IDLE' WHERE aircraft_id IN ({placeholders2})",
+                tuple(repair_ids),
+            )
+
+
+            # 4) Veloita kertaotteella
+            new_cash = (cash_now - total_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+            k.execute(
+                "UPDATE game_saves SET cash = %s, updated_at = %s WHERE save_id = %s",
+                (new_cash, datetime.utcnow(), self.save_id),
+            )
+
+            yhteys.commit()
+            self.cash = new_cash
+            print(f"✅ Korjattu {len(repair_ids)} konetta. Maksu {self._fmt_money(total_cost)}.")
+            return True
+
+        except Exception as e:
+            yhteys.rollback()
+            print(f"❌ Massakorjaus epäonnistui: {e}")
+            return False
+
+        finally:
+            try:
+                k.close()
+            except Exeption:
+                pass
+            try:
+                yhteys.close()
+            except Exception:
+                pass
+
+
     # Huoltovalikko
+    # Listaa kaikki koneet joiden kunto on < 100%
+    # Näyttää kustannusarvion kunkin koneen huollosta
+
+    def maintenance_menu (self) -> None:
+        broken = self._fetch_broken_planes()
+        if not broken:
+            print(" Yhtään rikki olevaa konetta ei löytynyt.")
+            input("\n Enter jatkaaksesi...")
+            return
+
+        _icon_title("Huoltovalikko")
+        for i, r in enumerate(broken, start=1):
+            cond = int(r.get("condition_percent") or 0)
+            miss = max(0,100 - cond)
+            est = (Decimal(miss)) * REPAIR_COST_PER_PERCENT).quantize(Decimal("0.01"))
+            name = r.get("model_name") or r.get("model_code") or "Unknown"
+            st = r.get("status") or "_"
+            print(f"{i:>2}") ✈️ {name} ({r.['registeration']}) | Kunto {cond}% | Status {st} | Arvio {self.fmt_money(est)}")
+            print("\n0) Korjaa kaikki listalla")
+
+            sel = input("Valitse numero (tyhjä = peruuta): ").strip()
+
+        if not sel:
+                return
+
+        if sel == "0":
+            ids = [int(r["aircaft_id"]) for r in broken]
+            self._repair_many_to_full_tx(ids)
+            input("\nEnter jatkaaksesi...")
+            return
+
+        try:
+            idx = int(self)
+                if not (1 <= idx <= len(broken)):
+                print("⚠️  Virheellinen valinta.")
+                return
+        exept ValueError:
+            print("⚠️  Virheellinen valinta.")
+
+        r = broken[idx - 1]
+        ok = self._repair_aircraft_to_full_tx (int(r["aircraft_id"]))
+        if ok:
+            print("✅ Korjaus valmis.")
+        input("\n Enter jatkaaksesi...")
+
+
+
+
 
 
 
@@ -1649,6 +1812,7 @@ class GameSession:
                          JOIN aircraft_models am ON am.model_code = a.model_code
                 WHERE a.save_id = %s
                   AND a.status = 'IDLE'
+                  AND a.condition_percent >= 100 
                 ORDER BY a.aircraft_id
                 """,
                 (self.save_id,),

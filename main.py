@@ -105,7 +105,6 @@ def start_new_game():
         cash = 300000.0
 
     # ===== RNG-SIEMENEN KYSYMINEN =====
-    # Tämä on tärkein kohta käyttäjän kannalta!
     print("\n🎲 RNG-siemen (satunnaislukugeneraattori):")
     print("   • Tyhjä = Normaali satunnainen peli")
     print("   • Numero (esim. 42) = Deterministinen peli")
@@ -168,7 +167,7 @@ def main():
     Päävalikko loopissa.
     """
     while True:
-        print("\n" + "✈️  Flight Game Tycoon".center(50, " "))
+        print("\n" + "✈️  Air Freight Company 666".center(50, " "))
         print("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
         print("1) 🌟 Uusi peli")
         print("2) 💾 Lataa peli")

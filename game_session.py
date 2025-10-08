@@ -80,6 +80,7 @@ from upgrade_config import (
     NON_STARTER_GROWTH,
     HQ_MONTHLY_FEE,
     MAINT_PER_AIRCRAFT,
+    BILL_GROWTH_RATE,
     STARTER_MAINT_DISCOUNT,
     REPAIR_COST_PER_PERCENT,
     SURVIVAL_TARGET_DAYS,
@@ -592,7 +593,8 @@ class GameSession:
             base_id=base_id,
             nickname="Iso-isän DC-3",
         )
-        print("🎁 Iso-isä lahjoitti Douglas DC-3 -koneen. Onnea matkaan!")
+        print("🎁 Iso-isä lahjoitti sinulle Douglas DC-3 -koneen ja velkansa. 🫣\nOnnea matkaan, tarvitset sitä!")
+        input("↩︎ Enter jatkaa...")
 
     # ---------- Päävalikko ----------
 
@@ -607,12 +609,11 @@ class GameSession:
             print(
                 f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident}")
             print("1) 📋 Listaa koneet")
-            print("2) 🛒 Kauppa (osta kone)")
-            print("3) ♻️  Päivitä konetta (ECO)")
+            print("2) 🛒 Kauppa")
+            print("3) ♻️ Päivitykset")
             print("4) 📦 Aktiiviset tehtävät")
             print("5) ➕ Aloita uusi tehtävä")
-            print("6) ⏭️  Seuraava päivä")
-            # Uudet pikakelausvaihtoehdot
+            print("6) ⏭️ Seuraava päivä")
             print("7) ⏩ Etene X päivää")
             print("8) 🎯 Etene kunnes ensimmäinen kone palaa")
             print("9) 🔧 Koneiden huolto")
@@ -831,7 +832,7 @@ class GameSession:
             registration = row.get("registration")
 
             print(
-                f"{idx:>2}) ♻️  {model_name} ({registration}) | Taso: {cur_level} → {next_level} | "
+                f"{idx:>2}) ♻️ {model_name} ({registration}) | Taso: {cur_level} → {next_level} | "
                 f"Eco: {current_eco:.2f} → {new_eco:.2f} | 💶 {self._fmt_money(cost)}"
             )
             menu_rows.append((row, cur_level, next_level, cost, factor, floor))
@@ -885,9 +886,10 @@ class GameSession:
 
         input("\n↩︎ Enter jatkaaksesi...")
 
-        #Haetaan rikkinäiset koneet
-        #Vain tämän tallennuksen koneet, condition percent < 100
-        #Tuodaan mukaan mallin nimi ja tyyppi jotta saadaan informatiivinen rivi
+    #Haetaan rikkinäiset koneet
+    #Vain tämän tallennuksen koneet, condition percent < 100
+    #Tuodaan mukaan mallin nimi ja tyyppi jotta saadaan informatiivinen rivi
+
     def _fetch_broken_planes(self) -> List[dict]:
         sql = """
             SELECT 
@@ -1005,9 +1007,7 @@ class GameSession:
         # Prosessi:
         # - Lukitaan kaikki annetut koneet yhdellä kyselyllä (SELECT ... IN(...) FOR UPDATE)
         # - Lasketaan yhteenlaskettu kustannus vain niille, jotka:
-        # * ovat alle 100% kunnossa,
-        # ja
-        # * eivät ole lennolla (BUSY)
+        # - ovat alle 100% kunnossa, ja eivät ole lennolla (BUSY)
         # - Lukitaan kassa ja tarkistetaan riittävyys
         # - Päivitetään kaikki korjattavat kerralla, veloitetaan kertaotteella
         # - Tulostetaan yhteenveto
@@ -1049,7 +1049,7 @@ class GameSession:
                 if cond >= 100:
                     continue
                 need = 100 - cond
-                total_cost += (Decimal(need) * REPAIR_PER_PERCENT)
+                total_cost += (Decimal(need) * REPAIR_COST_PER_PERCENT)
                 repair_ids.append(aid)
 
             total_cost = total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -1096,8 +1096,8 @@ class GameSession:
 
         finally:
             try:
-                k.close()
-            except Exeption:
+                kursori.close()
+            except Exception:
                 pass
             try:
                 yhteys.close()
@@ -1821,67 +1821,86 @@ class GameSession:
 
         return {"arrivals": arrivals_count, "earned": total_delta}
 
+
+
+
+
+
     def _process_monthly_bills(self, silent: bool = False) -> None:
-        """
-        Veloittaa kuukausittaiset kulut:
-          - HQ_MONTHLY_FEE
-          - MAINT_PER_AIRCRAFT per aktiivinen kone
-          - STARTER-koneille alennus (STARTER_MAINT_DISCOUNT)
-        Jos rahat eivät riitä: asetetaan status = BANKRUPT.
-        """
-        yhteys = get_connection()
-        try:
-            kursori = yhteys.cursor(dictionary=True)
-            # Laske aktiivisten (ei myytyjen) koneiden määrä ja STARTER-koneiden osuus
-            kursori.execute(
-                """
-                SELECT COUNT(*)                                                 AS total,
-                       SUM(CASE WHEN am.category = 'STARTER' THEN 1 ELSE 0 END) AS starters
-                FROM aircraft a
-                         JOIN aircraft_models am ON am.model_code = a.model_code
-                WHERE a.save_id = %s
-                  AND (a.sold_day IS NULL OR a.sold_day = 0)
-                """,
-                (self.save_id,),
-            )
-            r = kursori.fetchone() or {"total": 0, "starters": 0}
-            total_planes = int(r["total"] or 0)
-            starter_planes = int(r["starters"] or 0)
-        finally:
+            """
+            Veloittaa kuukausittaiset kulut.
+            - HQ_MONTHLY_FEE
+            - MAINT_PER_AIRCRAFT per aktiivinen kone
+            - STARTER-koneille alennus (STARTER_MAINT_DISCOUNT)
+            - 60. päivästä alkaen kulut kasvavat korkoa korolle BILL_GROWTH_RATE-kertoimella.
+            Jos rahat eivät riitä: asetetaan status = BANKRUPT.
+            """
+            yhteys = get_connection()
             try:
-                kursori.close()
-            except Exception:
-                pass
+                kursori = yhteys.cursor(dictionary=True)
+                # Laske aktiivisten (ei myytyjen) koneiden määrä ja STARTER-koneiden osuus
+                kursori.execute(
+                    """
+                    SELECT COUNT(*)                                                 AS total,
+                           SUM(CASE WHEN am.category = 'STARTER' THEN 1 ELSE 0 END) AS starters
+                    FROM aircraft a
+                             JOIN aircraft_models am ON am.model_code = a.model_code
+                    WHERE a.save_id = %s
+                      AND (a.sold_day IS NULL OR a.sold_day = 0)
+                    """,
+                    (self.save_id,),
+                )
+                r = kursori.fetchone() or {"total": 0, "starters": 0}
+                total_planes = int(r["total"] or 0)
+                starter_planes = int(r["starters"] or 0)
+            finally:
+                try:
+                    kursori.close()
+                except Exception:
+                    pass
+                try:
+                    yhteys.close()
+                except Exception:
+                    pass  # [cite: 449]
+
+            # Lasketaan ensin laskun perussumma ilman korkoja
+            maint_starter = (MAINT_PER_AIRCRAFT * STARTER_MAINT_DISCOUNT) * starter_planes
+            maint_nonstarter = MAINT_PER_AIRCRAFT * max(0, total_planes - starter_planes)
+            base_bill = (HQ_MONTHLY_FEE + maint_starter + maint_nonstarter).quantize(Decimal("0.01"))  #
+
+            # UUSI OSA: Laske "korkoa korolle" 60. päivästä alkaen
+            total_bill = base_bill
+            if self.current_day >= 60:
+                # Lasketaan, monesko korollinen laskutuskausi on menossa.
+                # Päivä 60 = 1. kausi, Päivä 90 = 2. kausi jne.
+                growth_periods = (self.current_day // 30) - 1
+
+                # Sovelletaan korkoa korolle -kaavaa peruslaskuun
+                # Kaava: Loppusumma = Perussumma * (1 + korko)^kaudet
+                growth_multiplier = (1 + BILL_GROWTH_RATE) ** growth_periods
+                total_bill = (base_bill * growth_multiplier).quantize(Decimal("0.01"))
+
+            if not silent:
+                print("\n💸 Kuukausilaskut erääntyivät!")
+                print(f"   🏢Lainat, Vuokrat ja Huollot (perussumma): {self._fmt_money(base_bill)}")
+                if self.current_day >= 60:
+                    print(f"   📈 Inflaatiokorotus: +{((total_bill / base_bill - 1) * 100):.1f}%")
+                print(f"   ➖ Yhteensä maksettavaa: {self._fmt_money(total_bill)}")
+
+            # Maksu tai konkurssi
+            if self.cash < total_bill:
+                if not silent:
+                    print("💀 Rahat eivät riitä laskuihin. Yritys menee konkurssiin.")
+                self._set_status("BANKRUPT")
+                return
+
             try:
-                yhteys.close()
-            except Exception:
-                pass
-
-        # Huoltokulu: STARTER-koneille alennus, muille täysi hinta
-        maint_starter = (MAINT_PER_AIRCRAFT * STARTER_MAINT_DISCOUNT) * starter_planes
-        maint_nonstarter = MAINT_PER_AIRCRAFT * max(0, total_planes - starter_planes)
-        total_bill = (HQ_MONTHLY_FEE + maint_starter + maint_nonstarter).quantize(Decimal("0.01"))
-
-        if not silent:
-            print("\n💸 Kuukausilaskut erääntyivät!")
-            print(f"   🏢 HQ: {self._fmt_money(HQ_MONTHLY_FEE)}")
-            print(f"   🔧 Huollot ({total_planes} kpl): {self._fmt_money(maint_starter + maint_nonstarter)}")
-            print(f"   ➖ Yhteensä: {self._fmt_money(total_bill)}")
-
-        # Maksu tai konkurssi
-        if self.cash < total_bill:
-            if not silent:
-                print("💀 Rahat eivät riitä laskuihin. Yritys menee konkurssiin.")
-            self._set_status("BANKRUPT")
-            return
-
-        try:
-            self._add_cash(-total_bill)
-            if not silent:
-                print("✅ Laskut maksettu.")
-        except Exception as e:
-            if not silent:
-                print(f"❌ Laskujen veloitus epäonnistui: {e}")
+                self._add_cash(-total_bill)
+                if not silent:
+                    print("✅ Laskut maksettu.")
+            except Exception as e:
+                if not silent:
+                    print(f"❌ Laskujen veloitus epäonnistui: {e}")
 
     # ---------- Pikakelaus ---------
 

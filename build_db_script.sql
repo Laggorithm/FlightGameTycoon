@@ -198,16 +198,16 @@ INSERT INTO random_events (
   duration,
   sound_file
 ) VALUES
-('Volcano', NULL, 50, 0.53, 40, 3.0, 1, NULL),
-('Aliens', NULL, 100, 0.9, 10, 0.0, 7, NULL),
-('Freezing Cold', NULL, 10, 0.8, 7, 1.0, 2, NULL),
-('Storm Clouds', NULL, 5, 0.7, 15, 1.0, 3, NULL),
-('Hurricane', NULL, 15, 0.6, 25, 2.0, 1, NULL),
-('Meteor', NULL, 70, 0.0, 100, 0.0, 1, NULL),
-('Workers Strike', NULL, 6, 0.5, 0, 2.0, 3, NULL),
-('Sunny Sky', NULL, 3, 1.0, 0, 0.8, 1, NULL),
-('Favorable Winds', NULL, 7, 1.0, 0, 0.7, 2, NULL),
-('Best Day Ever', NULL, 15, 1.5, 0, 0.5, 1, NULL),
+('Volcano', NULL, 50, 0.53, 40, 3.0, 1, sfx/volcano-eruption.mp3),
+('Aliens', NULL, 100, 0.9, 10, 0.0, 7, sfx/the-x-files-theme.mp3),
+('Freezing Cold', NULL, 10, 0.8, 7, 1.0, 2, sfx/frostpunk-generator-sound.mp3),
+('Storm Clouds', NULL, 5, 0.7, 15, 1.0, 3, sfx/thunder-sound-effect.mp3),
+('Hurricane', NULL, 15, 0.6, 25, 2.0, 1, sfx/49_20siren.mp3),
+('Meteor', NULL, 70, 0.0, 100, 0.0, 1, sfx/impact_explosion_03.mp3),
+('Workers Strike', NULL, 6, 0.5, 0, 2.0, 3, sfx/screaming-protester.mp3),
+('Sunny Sky', NULL, 3, 1.0, 0, 0.8, 1, sfx/here-comes-the-sun.mp3),
+('Favorable Winds', NULL, 7, 1.0, 0, 0.7, 2, sfx/yoshis-island-music-map-theme-short.mp3),
+('Best Day Ever', NULL, 15, 1.5, 0, 0.5, 1, sfx/life_could_be_a_dream.mp3),
 ('Normal Day', NULL, 1, 1.0, 0, 1.0, 1, NULL);
 
 -- --------------------------------------------------------

@@ -4,9 +4,13 @@
     <option name="autoReloadType" value="SELECTIVE" />
   </component>
   <component name="ChangeListManager">
-    <list default="true" id="bb8338f3-a6e1-42ce-b811-349185d7a323" name="Changes" comment="Korjattu koneiden eco arvojen laskut, formatointi myös tehtäviin.&#10;Päivitetty upgrade_config.py:hyn palkkio muuttujat ja lisätty uusia eco-arvoja. &#10;Lisätty kommentteja.">
+    <list default="true" id="bb8338f3-a6e1-42ce-b811-349185d7a323" name="Changes" comment="Game Balancea korjattu, lisätty build_db_script.sql">
+      <change beforePath="$PROJECT_DIR$/.idea/FlightGameTycoon.iml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/FlightGameTycoon.iml" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/.idea/misc.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/misc.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/.idea/workspace.xml" beforeDir="false" afterPath="$PROJECT_DIR$/.idea/workspace.xml" afterDir="false" />
       <change beforePath="$PROJECT_DIR$/game_session.py" beforeDir="false" afterPath="$PROJECT_DIR$/game_session.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/upgrade_config.py" beforeDir="false" afterPath="$PROJECT_DIR$/upgrade_config.py" afterDir="false" />
+      <change beforePath="$PROJECT_DIR$/utils.py" beforeDir="false" afterPath="$PROJECT_DIR$/utils.py" afterDir="false" />
     </list>
     <option name="SHOW_DIALOG" value="false" />
     <option name="HIGHLIGHT_CONFLICTS" value="true" />
@@ -17,6 +21,7 @@
     <option name="RECENT_TEMPLATES">
       <list>
         <option value="Python Script" />
+        <option value="SQL File" />
       </list>
     </option>
   </component>
@@ -40,22 +45,22 @@
     &quot;assignee&quot;: &quot;Laggorithm&quot;
   }
 }</component>
-  <component name="GithubPullRequestsUISettings"><![CDATA[{
-  "selectedUrlAndAccountId": {
-    "url": "https://github.com/Laggorithm/FlightGameTycoon.git",
-    "accountId": "a03cb36a-a09a-46ad-95d9-3a5fdbdbc413"
+  <component name="GithubPullRequestsUISettings">{
+  &quot;selectedUrlAndAccountId&quot;: {
+    &quot;url&quot;: &quot;https://github.com/Laggorithm/FlightGameTycoon.git&quot;,
+    &quot;accountId&quot;: &quot;949aad47-a91e-447a-b99a-1aac9d2b4555&quot;
   },
-  "recentNewPullRequestHead": {
-    "server": {
-      "useHttp": false,
-      "host": "github.com",
-      "port": null,
-      "suffix": null
+  &quot;recentNewPullRequestHead&quot;: {
+    &quot;server&quot;: {
+      &quot;useHttp&quot;: false,
+      &quot;host&quot;: &quot;github.com&quot;,
+      &quot;port&quot;: null,
+      &quot;suffix&quot;: null
     },
-    "owner": "Laggorithm",
-    "repository": "FlightGameTycoon"
+    &quot;owner&quot;: &quot;Laggorithm&quot;,
+    &quot;repository&quot;: &quot;FlightGameTycoon&quot;
   }
-}]]></component>
+}</component>
   <component name="ProjectColorInfo">{
   &quot;customColor&quot;: &quot;&quot;,
   &quot;associatedIndex&quot;: 6
@@ -65,34 +70,33 @@
     <option name="hideEmptyMiddlePackages" value="true" />
     <option name="showLibraryContents" value="true" />
   </component>
-  <component name="PropertiesComponent">{
-  &quot;keyToString&quot;: {
-    &quot;ModuleVcsDetector.initialDetectionPerformed&quot;: &quot;true&quot;,
-    &quot;Python.Airplane.executor&quot;: &quot;Run&quot;,
-    &quot;Python.event_system.executor&quot;: &quot;Run&quot;,
-    &quot;Python.game_session.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main.executor&quot;: &quot;Run&quot;,
-    &quot;Python.main2.executor&quot;: &quot;Run&quot;,
-    &quot;Python.save_game.executor&quot;: &quot;Run&quot;,
-    &quot;Python.upgrade_config.executor&quot;: &quot;Run&quot;,
-    &quot;Python.utils.executor&quot;: &quot;Run&quot;,
-    &quot;RunOnceActivity.ShowReadmeOnStart&quot;: &quot;true&quot;,
-    &quot;RunOnceActivity.git.unshallow&quot;: &quot;true&quot;,
-    &quot;git-widget-placeholder&quot;: &quot;Laggorithm&quot;,
-    &quot;node.js.detected.package.eslint&quot;: &quot;true&quot;,
-    &quot;node.js.detected.package.tslint&quot;: &quot;true&quot;,
-    &quot;node.js.selected.package.eslint&quot;: &quot;(autodetect)&quot;,
-    &quot;node.js.selected.package.tslint&quot;: &quot;(autodetect)&quot;,
-    &quot;nodejs_package_manager_path&quot;: &quot;npm&quot;,
-    &quot;settings.editor.selected.configurable&quot;: &quot;com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable&quot;,
-    &quot;vue.rearranger.settings.migration&quot;: &quot;true&quot;
+  <component name="PropertiesComponent"><![CDATA[{
+  "keyToString": {
+    "ModuleVcsDetector.initialDetectionPerformed": "true",
+    "Python.Airplane.executor": "Run",
+    "Python.game_session.executor": "Run",
+    "Python.main.executor": "Run",
+    "Python.main2.executor": "Run",
+    "Python.save_game.executor": "Run",
+    "Python.upgrade_config.executor": "Run",
+    "Python.utils.executor": "Run",
+    "RunOnceActivity.ShowReadmeOnStart": "true",
+    "RunOnceActivity.git.unshallow": "true",
+    "git-widget-placeholder": "ViliJ",
+    "node.js.detected.package.eslint": "true",
+    "node.js.detected.package.tslint": "true",
+    "node.js.selected.package.eslint": "(autodetect)",
+    "node.js.selected.package.tslint": "(autodetect)",
+    "nodejs_package_manager_path": "npm",
+    "settings.editor.selected.configurable": "com.jetbrains.python.configuration.PyActiveSdkModuleConfigurable",
+    "vue.rearranger.settings.migration": "true"
   }
-}</component>
+}]]></component>
   <component name="SharedIndexes">
     <attachedChunks>
       <set>
-        <option value="bundled-js-predefined-d6986cc7102b-e03c56caf84a-JavaScript-PY-252.23892.515" />
-        <option value="bundled-python-sdk-7e47963ff851-f0eec537fc84-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-252.23892.515" />
+        <option value="bundled-js-predefined-d6986cc7102b-b598e85cdad2-JavaScript-PY-252.25557.130" />
+        <option value="bundled-python-sdk-1bde30d8e611-7b97d883f26b-com.jetbrains.pycharm.pro.sharedIndexes.bundled-PY-252.25557.130" />
       </set>
     </attachedChunks>
   </component>
@@ -104,8 +108,8 @@
       <option name="presentableId" value="Default" />
       <updated>1758532645521</updated>
       <workItem from="1758532646553" duration="9265000" />
-      <workItem from="1758879652212" duration="15593000" />
-      <workItem from="1759916661015" duration="858000" />
+      <workItem from="1758879652212" duration="16887000" />
+      <workItem from="1759126939586" duration="11102000" />
     </task>
     <task id="LOCAL−00001" summary="Pelilooppi core funktiot. Tallennus siirretty game_session.py">
       <option name="closed" value="true" />
@@ -142,7 +146,28 @@
       <option name="presentableId" value="LOCAL−00005" />
       <updated>1758902062706</updated>
     </task>
-    <option name="localTasksCounter" value="6" />
+    <task id="LOCAL−00006" summary="Korjattu koneiden eco arvojen laskut, formatointi myös tehtäviin.&#10;Päivitetty upgrade_config.py:hyn palkkio muuttujat ja lisätty uusia eco-arvoja. &#10;Lisätty kommentteja.">
+      <option name="closed" value="true" />
+      <created>1758904733017</created>
+      <option name="number" value="LOCAL−00006" />
+      <option name="presentableId" value="LOCAL−00006" />
+      <updated>1758904733017</updated>
+    </task>
+    <task id="LOCAL−00007" summary="Game Balancea korjattu, lisätty build_db_script.sql">
+      <option name="closed" value="true" />
+      <created>1759315173050</created>
+      <option name="number" value="LOCAL−00007" />
+      <option name="presentableId" value="LOCAL−00007" />
+      <updated>1759315173050</updated>
+    </task>
+    <task id="LOCAL−00008" summary="Game Balancea korjattu, lisätty build_db_script.sql">
+      <option name="closed" value="true" />
+      <created>1759315242766</created>
+      <option name="number" value="LOCAL−00008" />
+      <option name="presentableId" value="LOCAL−00008" />
+      <updated>1759315242766</updated>
+    </task>
+    <option name="localTasksCounter" value="9" />
     <servers />
   </component>
   <component name="TypeScriptGeneratedFilesManager">
@@ -165,17 +190,19 @@
     <MESSAGE value="Korjattu edellisen refaktoroinnin virheitä" />
     <MESSAGE value="Lisätty pikakelaus funktiot" />
     <MESSAGE value="Korjattu koneiden eco arvojen laskut, formatointi myös tehtäviin.&#10;Päivitetty upgrade_config.py:hyn palkkio muuttujat ja lisätty uusia eco-arvoja. &#10;Lisätty kommentteja." />
-    <option name="LAST_COMMIT_MESSAGE" value="Korjattu koneiden eco arvojen laskut, formatointi myös tehtäviin.&#10;Päivitetty upgrade_config.py:hyn palkkio muuttujat ja lisätty uusia eco-arvoja. &#10;Lisätty kommentteja." />
+    <MESSAGE value="Game Balancea korjattu, lisätty build_db_script.sql" />
+    <option name="LAST_COMMIT_MESSAGE" value="Game Balancea korjattu, lisätty build_db_script.sql" />
   </component>
   <component name="com.intellij.coverage.CoverageDataManagerImpl">
-    <SUITE FILE_PATH="coverage/FlightGameTycoon$main2.coverage" NAME="main2 Coverage Results" MODIFIED="1758738879976" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/FlightGameTycoon$aircraft.coverage" NAME="aircraft Coverage Results" MODIFIED="1758877641707" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/FlightGameTycoon$main.coverage" NAME="main Coverage Results" MODIFIED="1758884137804" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/FlightGameTycoon$upgrade_config.coverage" NAME="upgrade_config Coverage Results" MODIFIED="1758872390292" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/FlightGameTycoon$Airplane.coverage" NAME="Airplane Coverage Results" MODIFIED="1758541976741" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/FlightGameTycoon$event_system.coverage" NAME="event_system Coverage Results" MODIFIED="1759917419102" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
-    <SUITE FILE_PATH="coverage/FlightGameTycoon$game_session.coverage" NAME="game_session Coverage Results" MODIFIED="1758878125461" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/FlightGameTycoon$utils.coverage" NAME="utils Coverage Results" MODIFIED="1758783106515" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
     <SUITE FILE_PATH="coverage/FlightGameTycoon$save_game.coverage" NAME="save_game Coverage Results" MODIFIED="1758779342146" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/FlightGameTycoon$main.coverage" NAME="main Coverage Results" MODIFIED="1758890965537" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/FlightGameTycoon$game_session.coverage" NAME="game_session Coverage Results" MODIFIED="1758890959194" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/FlightGameTycoon$sounds.coverage" NAME="sounds Coverage Results" MODIFIED="1759492580668" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/FlightGameTycoon$Airplane.coverage" NAME="Airplane Coverage Results" MODIFIED="1758541976741" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/FlightGameTycoon$main2.coverage" NAME="main2 Coverage Results" MODIFIED="1758738879976" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/FlightGameTycoon$upgrade_config.coverage" NAME="upgrade_config Coverage Results" MODIFIED="1758894844583" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/FlightGameTycoon$play_sound.coverage" NAME="play_sound Coverage Results" MODIFIED="1759319782793" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
+    <SUITE FILE_PATH="coverage/FlightGameTycoon$test.coverage" NAME="test Coverage Results" MODIFIED="1758885246463" SOURCE_PROVIDER="com.intellij.coverage.DefaultCoverageFileProvider" RUNNER="coverage.py" COVERAGE_BY_TEST_ENABLED="false" COVERAGE_TRACING_ENABLED="false" WORKING_DIRECTORY="$PROJECT_DIR$" />
   </component>
 </project>

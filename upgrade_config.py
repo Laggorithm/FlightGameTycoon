@@ -9,8 +9,8 @@ from decimal import Decimal
 # --------- Palkkion muodostus ------------------------------------
 # Perusmalli pitää palkkion riippuvuuden selkeänä: lineaarinen painon ja etäisyyden suhteen.
 # Pienin palkkio estää mitättömät keikat; sakko sidotaan suoraan palkkioon.
-TASK_REWARD_PER_KG: Decimal = Decimal("10.10")   # €/kg
-TASK_REWARD_PER_KM: Decimal = Decimal("6.90")    # €/km
+TASK_REWARD_PER_KG: Decimal = Decimal("2.50")   # €/kg
+TASK_REWARD_PER_KM: Decimal = Decimal("1.90")    # €/km
 TASK_MIN_REWARD: Decimal = Decimal("250.00")     # alin sallittu palkkio
 TASK_PENALTY_RATIO: Decimal = Decimal("0.30")    # sakko-osuus palkkiosta
 
@@ -63,9 +63,12 @@ NON_STARTER_GROWTH: Decimal = Decimal("1.20")    # kasvukerroin per taso muille 
 # Kiinteät kulut luovat jatkuvan tarpeen lentää. Huollon alennuksella voidaan
 # pehmentää aloitusta ilman mikromanagerointia.
 HQ_MONTHLY_FEE: Decimal = Decimal("25000.00")    # pääkonttorin kuukausimaksu
-
+REPAIR_COST_PER_PERCENT: Decimal = Decimal("2000.00")
 MAINT_PER_AIRCRAFT: Decimal = Decimal("5000.00") # huoltomaksu per kone per 30 pv
 STARTER_MAINT_DISCOUNT: Decimal = Decimal("1.00")# 1.00 = ei alennusta; esim. 0.50 = -50 %
+# Kuukausilaskujen kasvu (korkoa korolle)
+# Tämä kerroin astuu voimaan 60. päivästä alkaen. Oletus: 0.05 = 5% kasvu per 30 pv.
+BILL_GROWTH_RATE: Decimal = Decimal("0.05")
 
 # ---------- Pelin tavoite ----------
 # Suuntaa-antava tavoite tasapainolle: kuinka monen päivän yli pitäisi kyetä

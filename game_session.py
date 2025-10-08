@@ -1147,52 +1147,87 @@ class GameSession:
             except Exception:
                 pass
 
+    def maintenance_menu(self) -> None:
+        """
+        Interaktiivinen huoltovalikko koneiden korjaamiseen.
 
-    # Huoltovalikko
-    # Listaa kaikki koneet joiden kunto on < 100%
-    # Näyttää kustannusarvion kunkin koneen huollosta
+        Prosessi:
+        1. Haetaan kaikki rikkinäiset koneet (_fetch_broken_planes)
+        2. Näytetään lista koneista ja niiden korjauskustannuksista
+        3. Käyttäjä voi valita:
+           - Yksittäisen koneen korjauksen (numero 1-N)
+           - Kaikkien koneiden korjauksen kerralla (0)
+           - Peruutuksen (tyhjä syöte)
+        4. Kutsutaan joko _repair_aircraft_to_full_tx tai _repair_many_to_full_tx
 
-    def maintenance_menu (self) -> None:
+        Huom: Näyttää myös arvion korjauskustannuksesta jokaiselle koneelle
+        """
+        # 1. Haetaan rikkinäiset koneet
         broken = self._fetch_broken_planes()
+
         if not broken:
-            print(" Yhtään rikki olevaa konetta ei löytynyt.")
-            input("\n Enter jatkaaksesi...")
+            print("ℹ️ Yhtään rikki olevaa konetta ei löytynyt.")
+            input("\n↩️ Enter jatkaaksesi...")
             return
 
+        # 2. Näytetään huoltovalikko
         _icon_title("Huoltovalikko")
-        for i, r in enumerate(broken, start=1):
-            cond = int(r.get("condition_percent") or 0)
-            miss = max(0,100 - cond)
-            est = (Decimal(miss) * REPAIR_COST_PER_PERCENT).quantize(Decimal("0.01"))
-            name = r.get("model_name") or r.get("model_code") or "Unknown"
-            st = r.get("status") or "_"
-            print(f"{i:>2} ✈️ {name} ({r.registration}) | Kunto {cond}% | Status {st} | Arvio {self.fmt_money(est)}")
-            print("\n0) Korjaa kaikki listalla")
 
-            sel = input("Valitse numero (tyhjä = peruuta): ").strip()
+        for i, r in enumerate(broken, start=1):
+            # Lasketaan kunnon puute ja korjauskustannusarvio
+            cond = int(r.get("condition_percent") or 0)
+            miss = max(0, 100 - cond)
+            est = (Decimal(miss) * REPAIR_COST_PER_PERCENT).quantize(Decimal("0.01"))
+
+            # Haetaan näyttöön tarvittavat tiedot
+            name = r.get("model_name") or r.get("model_code") or "Unknown"
+            reg = r.get("registration") or "???"  # KORJATTU: oli "registeration" (kirjoitusvirhe)
+            st = r.get("status") or "IDLE"
+
+            # Tulostetaan rivi
+            print(
+                f"{i:>2}) ✈️ {name} ({reg}) | "
+                f"Kunto: {cond}% | Status: {st} | "
+                f"Arvio: {self._fmt_money(est)}"  # KORJATTU: oli self.fmt_money (ilman alaviivaa)
+            )
+
+        # 3. Lisätään "korjaa kaikki" -vaihtoehto
+        print("\n0) 🔧 Korjaa kaikki listalla")
+
+        # 4. Kysytään käyttäjän valinta
+        sel = input("\nValitse numero (tyhjä = peruuta): ").strip()
 
         if not sel:
             return
 
+        # 5. Käsitellään valinta
         if sel == "0":
-            ids = [int(r["aircaft_id"]) for r in broken]
+            # Korjataan kaikki
+            ids = [int(r["aircraft_id"]) for r in broken]  # KORJATTU: oli "aircaft_id" (kirjoitusvirhe)
             self._repair_many_to_full_tx(ids)
-            input("\nEnter jatkaaksesi...")
+            input("\n↩️ Enter jatkaaksesi...")
             return
 
+        # 6. Korjataan yksittäinen kone
         try:
-            idx = int(self)
+            idx = int(sel)  # KORJATTU: oli int(self) - täysin väärä!
             if not (1 <= idx <= len(broken)):
                 print("⚠️  Virheellinen valinta.")
+                input("\n↩️ Enter jatkaaksesi...")  # LISÄTTY: puuttui
                 return
         except ValueError:
             print("⚠️  Virheellinen valinta.")
+            input("\n↩️ Enter jatkaaksesi...")  # LISÄTTY: puuttui
+            return
 
-            r = broken[idx - 1]
-            ok = self._repair_aircraft_to_full_tx (int(r["aircraft_id"]))
-            if ok:
-                print("✅ Korjaus valmis.")
-                input("\n Enter jatkaaksesi...")
+        # 7. Suoritetaan yksittäisen koneen korjaus
+        r = broken[idx - 1]
+        ok = self._repair_aircraft_to_full_tx(int(r["aircraft_id"]))
+
+        if ok:
+            print("✅ Korjaus valmis.")
+
+        input("\n↩️ Enter jatkaaksesi...")
 
 
 

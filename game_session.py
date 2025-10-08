@@ -62,6 +62,8 @@ Näin voit testata että RNG-siemen toimii oikein:
 import math
 import random
 import string
+import random
+import time
 from typing import List, Optional, Dict, Set
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime
@@ -111,62 +113,6 @@ def _icon_title(title: str) -> None:
     print(f"╚{bar}╝")
 
 
-# ---------- MIGRAATIO: aircraft_upgrades uudet sarakkeet ----------
-
-def migrate_add_eco_columns_to_aircraft_upgrades() -> None:
-    """
-    Lisää aircraft_upgrades-tauluun sarakkeet (jos puuttuvat):
-      - eco_factor_per_level DOUBLE NOT NULL DEFAULT 0.90
-      - eco_floor DOUBLE NOT NULL DEFAULT 0.50
-    Lisäksi luo hyödylliset indeksit:
-      - idx_air_upg_air_code (aircraft_id, upgrade_code)
-      - idx_air_upg_day (installed_day)
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor(dictionary=True)
-
-        # 1) Haetaan olemassa olevat sarakkeet
-        kursori.execute("""
-            SELECT COLUMN_NAME
-            FROM information_schema.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'aircraft_upgrades'
-        """)
-        existing_cols: Set[str] = {row["COLUMN_NAME"] for row in (kursori.fetchall() or [])}
-
-        # 2) Lisätään puuttuvat sarakkeet
-        if "eco_factor_per_level" not in existing_cols:
-            kursori.execute("""
-                ALTER TABLE aircraft_upgrades
-                ADD COLUMN eco_factor_per_level DOUBLE NOT NULL DEFAULT 0.90
-            """)
-        if "eco_floor" not in existing_cols:
-            kursori.execute("""
-                ALTER TABLE aircraft_upgrades
-                ADD COLUMN eco_floor DOUBLE NOT NULL DEFAULT 0.50
-            """)
-
-        # 3) Luodaan puuttuvat indeksit
-        kursori.execute("""
-            SELECT INDEX_NAME
-            FROM information_schema.STATISTICS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'aircraft_upgrades'
-        """)
-        existing_idx: Set[str] = {row["INDEX_NAME"] for row in (kursori.fetchall() or [])}
-
-        if "idx_air_upg_air_code" not in existing_idx:
-            kursori.execute("""
-                CREATE INDEX idx_air_upg_air_code
-                ON aircraft_upgrades (aircraft_id, upgrade_code)
-            """)
-        if "idx_air_upg_day" not in existing_idx:
-            kursori.execute("""
-                CREATE INDEX idx_air_upg_day
-                ON aircraft_upgrades (installed_day)
-            """)
-
-
 # ---------- DB-hakufunktiot (moduulitaso) ----------
 
 def fetch_player_aircrafts_with_model_info(save_id: int) -> List[dict]:
@@ -203,16 +149,14 @@ def fetch_player_aircrafts_with_model_info(save_id: int) -> List[dict]:
 
 def get_current_aircraft_upgrade_state(aircraft_id: int, upgrade_code: str = UPGRADE_CODE) -> dict:
     """
-    Palauttaa koneen tuoreimman ECO-upgrade-tilan dict-muodossa:
-      {
-        "level": int,                     # nykyinen taso (0 jos ei päivityksiä)
-        "eco_factor_per_level": Decimal,  # kerroin per taso (esim. 0.90)
-        "eco_floor": Decimal              # ekokertoimen alaraja (esim. 0.50)
-      }
-    Jos historiarivejä ei ole, palauttaa oletukset (0, DEFAULT_ECO_FACTOR_PER_LEVEL, DEFAULT_ECO_FLOOR).
+    Palauttaa koneen tuoreimman päivitystason dict-muodossa.
+    - Hakee vain ja ainoastaan 'level'-sarakkeen, koska laskentalogiikka
+      on siirretty kokonaan Python-koodiin.
+    - Jos päivityksiä ei löydy, palauttaa tason 0.
     """
+    # SQL-kysely on nyt yksinkertaistettu hakemaan vain tason.
     sql = """
-        SELECT level, eco_factor_per_level, eco_floor
+        SELECT level
         FROM aircraft_upgrades
         WHERE aircraft_id = %s
           AND upgrade_code = %s
@@ -224,40 +168,40 @@ def get_current_aircraft_upgrade_state(aircraft_id: int, upgrade_code: str = UPG
         kursori.execute(sql, (aircraft_id, upgrade_code))
         r = kursori.fetchone()
 
+    # Jos tulosta ei löytynyt, kone on tasolla 0.
     if not r:
-        return {
-            "level": 0,
-            "eco_factor_per_level": DEFAULT_ECO_FACTOR_PER_LEVEL,
-            "eco_floor": DEFAULT_ECO_FLOOR,
-        }
+        return {"level": 0}
 
-    return {
-        "level": int(r.get("level") or 0),
-        "eco_factor_per_level": _to_dec(r.get("eco_factor_per_level") or DEFAULT_ECO_FACTOR_PER_LEVEL),
-        "eco_floor": _to_dec(r.get("eco_floor") or DEFAULT_ECO_FLOOR),
-    }
+    # Palautetaan sanakirja, jossa on vain nykyinen taso.
+    return {"level": int(r.get("level") or 0)}
 
 
-def compute_effective_eco_multiplier(aircraft_id: int, base_eco_multiplier) -> float:
+def compute_effective_eco_multiplier(aircraft_id: int, base_eco_multiplier: float) -> float:
     """
-    Laske efektiivinen eco-kerroin yhdelle koneelle:
-      effective = max(eco_floor, base_eco * (eco_factor_per_level ** level))
-    Palauttaa floatin käyttöä varten (esim. palkkiolaskennassa).
+    Laskee koneen lopullisen, tehokkaan ECO-kertoimen päivitysten perusteella.
+    - Kerroin > 1.0 on hyvä (bonuspalkkio), kerroin < 1.0 on huono (vähennys palkkioon).
+    - Jokainen päivitys parantaa kerrointa 5 %.
     """
-    base = abs(base_eco_multiplier)
-    state = get_current_aircraft_upgrade_state(aircraft_id, UPGRADE_CODE)
+    # 1. Haetaan koneen nykyinen päivitystaso tietokannasta.
+    state = get_current_aircraft_upgrade_state(aircraft_id)
     level = int(state["level"])
-    factor = state["eco_factor_per_level"]
-    ceiling = state["eco_floor"]
-    effective = 0.0
-    if effective < ceiling:
-        if level > 0:
-            for i in range(level + 1):
-                effective = base + factor
-        else:
-            effective = base
-    print(effective)
-    return float(effective)
+
+    # 2. Määritellään päivityksen vaikutus. 1.05 = 5% parannus per taso.
+    # Koska kerroin on > 1, se KASVATTAA lopputulosta jokaisella tasolla.
+    factor_per_level = Decimal("1.05")
+
+    # 3. Lasketaan lopullinen kerroin "korkoa korolle" -periaatteella.
+    # Kaava: Lopullinen = Peruskerroin * (Päivityskerroin ^ Taso)
+    base_dec = Decimal(str(base_eco_multiplier))
+    effective_multiplier = base_dec * (factor_per_level ** level)
+
+    # 4. Varmistetaan, että kerroin pysyy turvallisissa rajoissa (esim. 0.50 - 5.00).
+    floor = Decimal("0.50")
+    cap = Decimal("5.00")
+    final_multiplier = max(floor, min(effective_multiplier, cap))
+
+    # 5. Palautetaan lopputulos float-muodossa pelin käyttöön.
+    return float(final_multiplier)
 
 
 def calc_aircraft_upgrade_cost(aircraft_row: dict, next_level: int) -> Decimal:
@@ -280,47 +224,32 @@ def calc_aircraft_upgrade_cost(aircraft_row: dict, next_level: int) -> Decimal:
     cost = (base * (growth ** (_to_dec(next_level) - _to_dec(1)))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
     return cost
 
-
-def apply_aircraft_upgrade(
-    aircraft_id: int,
-    installed_day: int,
-    cost,  # ei käytetä suoraan tässä; kassa veloitetaan kutsuvassa koodissa
-    upgrade_code: str = UPGRADE_CODE,
-    eco_factor_per_level=None,
-    eco_floor=None,
-) -> int:
+def apply_aircraft_upgrade(aircraft_id: int, installed_day: int) -> int:
     """
-    Kirjaa uuden ECO-upgrade -rivin historiaan:
-      - level = edellinen_taso + 1
-      - installed_day = annettu päivä
-      - eco_factor_per_level ja eco_floor:
-          - jos parametreja ei anneta, luetaan nykytilasta (joka palauttaa oletukset jos riviä ei ole)
-    Palauttaa: new_level (int).
+    Kirjaa uuden ECO-päivityksen historiatauluun.
+    - Hakee vanhan tason ja kasvattaa sitä yhdellä.
+    - Tallentaa vain tason ja päivän, koska laskentalogiikka on keskitetty.
+    - Palauttaa uuden tason (new_level).
     """
-    # 1) Luetaan nykyinen tila (sis. oletusparametrit jos ei vielä rivejä)
-    state = get_current_aircraft_upgrade_state(aircraft_id, upgrade_code)
+    # 1. Haetaan nykyinen päivitystaso.
+    state = get_current_aircraft_upgrade_state(aircraft_id)
     new_level = int(state["level"]) + 1
 
-    # 2) Käytetään parametreina annettuja eco-arvoja, tai nykytilaa jos None
-    factor = state["eco_factor_per_level"] if eco_factor_per_level is None else _to_dec(eco_factor_per_level)
-    floor = state["eco_floor"] if eco_floor is None else _to_dec(eco_floor)
-
-    # 3) Lisätään historian rivi
+    # 2. Lisätään uusi rivi historiatauluun.
+    # Uuden rivin luominen vanhan päivittämisen sijaan säilyttää täydellisen historian.
     sql = """
         INSERT INTO aircraft_upgrades
-            (aircraft_id, upgrade_code, level, installed_day, eco_factor_per_level, eco_floor)
+            (aircraft_id, upgrade_code, level, installed_day)
         VALUES
-            (%s, %s, %s, %s, %s, %s)
+            (%s, %s, %s, %s)
     """
     with get_connection() as yhteys:
         kursori = yhteys.cursor()
         kursori.execute(sql, (
             int(aircraft_id),
-            str(upgrade_code),
+            str(UPGRADE_CODE), # Käytetään globaalia vakiota "ECO"
             int(new_level),
             int(installed_day),
-            float(factor),
-            float(floor),
         ))
     return new_level
 
@@ -459,13 +388,7 @@ class GameSession:
           3) Pelaaja valitsee ensimmäisen tukikohdan, lisätään SMALL-upgrade
           4) Iso-isä lahjoittaa STARTER-koneen (DC3FREE)
         """
-        # Varmistetaan, että migraatio on ajettu (sarakkeet olemassa)
-        try:
-            migrate_add_eco_columns_to_aircraft_upgrades()
-        except Exception:
-            # ei kaadeta peliä, jos migraatio epäonnistuu – voidaan ajaa myöhemmin
-            pass
-        #
+
         yhteys = get_connection()
         kursori = yhteys.cursor()
         try:
@@ -609,7 +532,7 @@ class GameSession:
             print(
                 f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident}")
             print("1) 📋 Listaa koneet")
-            print("2) 🛒 Kauppa")
+            print("2) 🛒 Kauppapaikka")
             print("3) ♻️ Päivitykset")
             print("4) 📦 Aktiiviset tehtävät")
             print("5) ➕ Aloita uusi tehtävä")
@@ -642,10 +565,12 @@ class GameSession:
                 # Pelitilan tarkastelu (voitto/konkurssi)
                 if self.status == "BANKRUPT":
                     print("💀 Yritys meni konkurssiin. Peli päättyy.")
+                    self.show_end_game_stats()
                     break
                 if self.current_day >= SURVIVAL_TARGET_DAYS and self.status == "ACTIVE":
                     print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää. Voitit pelin!")
                     self._set_status("VICTORY")
+                    self.show_end_game_stats()
                     break
 
             elif choice == "7":
@@ -659,12 +584,14 @@ class GameSession:
                     # Pelitilan tarkastelu
                     if self.status == "BANKRUPT":
                         print("💀 Yritys meni konkurssiin. Peli päättyy.")
+                        self.show_end_game_stats()
                         break
                     if self.current_day >= SURVIVAL_TARGET_DAYS:
                         # Jos pikakelaus ei jo asettanut VICTORY-tilaa, tee se nyt
                         if self.status == "ACTIVE":
                             self._set_status("VICTORY")
                         print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää. Voitit pelin!")
+                        self.show_end_game_stats()
                         break
 
             elif choice == "8":
@@ -689,6 +616,10 @@ class GameSession:
             elif choice == "9":
                 # Huolto
                 self.maintenance_menu()
+
+            elif choice == "666":
+                # Shh, avaa salaisen Kas..Kerhohuoneen!
+                self.clubhouse_menu()
 
             elif choice == "0":
                 print("👋 Heippa!")
@@ -722,13 +653,33 @@ class GameSession:
             print(f"\n#{i:>2} ✈️  {(getattr(p, 'model_name', None) or p.model_code)} ({p.registration}) @ {p.current_airport_ident}")
             print(f"   💶 Ostohinta: {self._fmt_money(p.purchase_price)} | 🔧 Kunto: {cond}%{broken_flag} | 🧭 Status: {p.status}")
             print(f"   ⏱️ Tunnit: {p.hours_flown} h | 📅 Hankittu päivä: {p.acquired_day}")
-            print(f"   ♻️  ECO-taso: {lvl} | Efektiivinen eco-kerroin: x{eco_now:.2f}")
+            print(f"   ♻️ ECO-taso: {lvl} | Efektiivinen eco-kerroin: x{eco_now:.2f}")
 
         input("\n↩︎ Enter jatkaaksesi...")
 
-    # ---------- Kauppa ----------
+    # ---------- Kauppapaikka ----------
 
     def shop_menu(self) -> None:
+        """Päävalikko kaupalle, josta voi valita uuden tai käytetyn koneen oston."""
+        _icon_title("Kauppapaikka")
+        print("1) 🏭 Osta uusi kone tehtaalta")
+        print("2) 💸 Selaa käytettyjen markkinoita")
+        print("0) 🚪 Poistu")
+
+        choice = input("Valinta: ").strip()
+
+        if choice == "1":
+            self.buy_new_aircraft_menu()  # Entinen shop_menu, uudelleennimetty
+        elif choice == "2":
+            self.market_menu()  # Uusi valikko käytetyille koneille
+        elif choice == "0":
+            return
+        else:
+            print("⚠️  Virheellinen valinta.")
+
+    #---------- Tehtaalta tulevat lentokoneet --------------
+
+    def buy_new_aircraft_menu(self) -> None:
         """
         Lista myynnissä olevista konemalleista tukikohdan edistymisen mukaan.
         STARTER-kategoriaa ei koskaan näytetä.
@@ -800,95 +751,273 @@ class GameSession:
             print("❌ Osto epäonnistui.")
         input("\n↩︎ Enter jatkaaksesi...")
 
+    #---------- Lentori kauppapaikka  --------------
+
+    def market_menu(self) -> None:
+        """Käytettyjen koneiden markkinapaikan käyttöliittymä parannetulla formatoinnilla."""
+        self._refresh_market_aircraft()
+
+        _icon_title("Käytettyjen markkinat")
+
+        with get_connection() as yhteys:
+            kursori = yhteys.cursor(dictionary=True)
+            kursori.execute("""
+                            SELECT m.*, am.model_name, am.manufacturer
+                            FROM market_aircraft m
+                                     JOIN aircraft_models am ON m.model_code = am.model_code
+                            ORDER BY m.purchase_price ASC
+                            """)
+            market_planes = kursori.fetchall() or []
+
+        if not market_planes:
+            print("ℹ️  Markkinoilla ei ole juuri nyt yhtään konetta. Yritä myöhemmin uudelleen.");
+            input("\n↩︎ Enter jatkaaksesi...");
+            return
+
+        # Määritetään sarakkeiden leveydet
+        ID_W, NAME_W, PRICE_W, COND_W, HOURS_W, AGE_W, NOTES_W = 3, 28, 13, 7, 8, 10, 40
+
+        # Tulostetaan otsikkorivi
+        print(
+            f"{'ID':<{ID_W}} {'Kone (Malli)':<{NAME_W}} {'Hinta':>{PRICE_W}} {'Kunto':>{COND_W}} {'Tunnit':>{HOURS_W}} {'Ikä (pv)':>{AGE_W}} {'Huomiot':<{NOTES_W}}")
+        print(
+            f"{'-' * ID_W} {'-' * NAME_W} {'-' * PRICE_W} {'-' * COND_W} {'-' * HOURS_W} {'-' * AGE_W} {'-' * NOTES_W}")
+
+        for plane in market_planes:
+            # Katkaistaan pitkät nimet ja huomiot siististi
+            name_str = f"{plane['manufacturer']} {plane['model_name']}"
+            if len(name_str) > NAME_W - 1:
+                name_str = name_str[:NAME_W - 4] + "..."
+
+            notes = plane['market_notes'] or "-"
+            if len(notes) > NOTES_W - 1:
+                notes = notes[:NOTES_W - 4] + "..."
+
+            # Formatoidaan rivin tulostus määriteltyjen leveyksien mukaan
+            print(
+                f"{str(plane['market_id']):<{ID_W}} "
+                f"{name_str:<{NAME_W}} "
+                f"{self._fmt_money(plane['purchase_price']):>{PRICE_W}} "
+                f"{str(plane['condition_percent']) + '%':>{COND_W}} "
+                f"{str(plane['hours_flown']) + 'h':>{HOURS_W}} "
+                f"{str(self.current_day - plane['manufactured_day']):>{AGE_W}} "
+                f"{notes:<{NOTES_W}}"
+            )
+
+        choice = input("\nSyötä ostettavan koneen ID (tyhjä = peruuta): ").strip()
+        if not choice: return
+        try:
+            sel_id = int(choice)
+            selected_plane = next((p for p in market_planes if p['market_id'] == sel_id), None)
+            if not selected_plane:
+                print("⚠️  Virheellinen ID.");
+                return
+        except ValueError:
+            print("⚠️  Virheellinen ID.");
+            return
+
+        price = Decimal(selected_plane['purchase_price'])
+        if self.cash < price:
+            print(f"❌ Kassa ei riitä. Tarvitset {self._fmt_money(price)}, sinulla on {self._fmt_money(self.cash)}.");
+            input("\n↩︎ Enter jatkaaksesi...");
+            return
+
+        print(f"\nOlet ostamassa: {selected_plane['manufacturer']} {selected_plane['model_name']}")
+        print(
+            f"Hinta: {self._fmt_money(price)}, Kunto: {selected_plane['condition_percent']}%, Tunnit: {selected_plane['hours_flown']}h")
+        if selected_plane['market_notes']: print(f"Myyjän huomiot: {selected_plane['market_notes']}")
+
+        confirm = input("Vahvista osto (k/e): ").strip().lower()
+        if confirm != 'k':
+            print("❎ Peruutettu.");
+            return
+
+        # Suoritetaan osto transaktiona
+        success = self._purchase_market_aircraft_tx(selected_plane)
+        if success:
+            print("✅ Kaupat tehty! Kone lisätty laivastoosi.")
+        else:
+            print("❌ Osto epäonnistui.")
+        input("\n↩︎ Enter jatkaaksesi...")
+
+    def _refresh_market_aircraft(self):
+        """
+        Päivittää markkinoiden tarjonnan. Poistaa vanhat ja lisää uusia koneita.
+        Ajetaan joka kerta, kun pelaaja avaa markkinat.
+        """
+        with get_connection() as yhteys:
+            kursori = yhteys.cursor(dictionary=True)
+            # 1. Poista vanhat ilmoitukset (yli 10 päivää vanhat)
+            kursori.execute("DELETE FROM market_aircraft WHERE listed_day < %s", (self.current_day - 10,))
+
+            # 2. Tarkista, montako ilmoitusta on jäljellä
+            kursori.execute("SELECT COUNT(*) as cnt FROM market_aircraft")
+            current_listings = kursori.fetchone()['cnt']
+
+            # 3. Lisää uusia koneita, kunnes markkinoilla on 5-10 konetta
+            num_to_add = random.randint(5, 10) - current_listings
+            if num_to_add <= 0:
+                return
+
+            # Haetaan kaikki mahdolliset konemallit, joita voidaan lisätä
+            kursori.execute("SELECT model_code, purchase_price FROM aircraft_models WHERE category != 'STARTER'")
+            all_models = kursori.fetchall() or []
+            if not all_models: return
+
+            for _ in range(num_to_add):
+                model = random.choice(all_models)
+
+                # Arvotaan koneelle ominaisuudet
+                age = random.randint(10, 500)
+                hours = age * random.randint(1, 5)
+                condition = random.randint(20, 95)
+
+                # Hinta perustuu uuteen hintaan, mutta sitä muokataan iän, tuntien ja kunnon mukaan
+                price_modifier = (Decimal(condition) / 100) - (Decimal(hours) / 20000) - (Decimal(age) / 5000)
+                price_modifier = max(Decimal('0.1'), min(price_modifier, Decimal('0.9')))  # 10-90% uudesta hinnasta
+                price = (Decimal(model['purchase_price']) * price_modifier).quantize(Decimal("0.01"))
+
+                # Satunnainen huomio
+                notes_options = [
+                    None,
+                    "Edellinen omistaja oli todella varovainen.",
+                    "Rungossa on muutamia pieniä naarmuja.",
+                    "Moottori saattaa kaivata huoltoa pian.",
+                    "Tällä on lennetty vain lyhyitä matkoja.",
+                    "Sisusta on kuin uusi.",
+                    None, None
+                ]
+                notes = random.choice(notes_options)
+
+                kursori.execute(
+                    "INSERT INTO market_aircraft (model_code, purchase_price, condition_percent, hours_flown, manufactured_day, market_notes, listed_day) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                    (model['model_code'], price, condition, hours, self.current_day - age, notes, self.current_day)
+                )
+
+    def _purchase_market_aircraft_tx(self, plane_data: dict) -> bool:
+        """Suorittaa käytetyn koneen oston atomisena transaktiona."""
+        with get_connection() as yhteys:
+            kursori = yhteys.cursor()
+            try:
+                # 1. Varmista kassa ja lukitse pelaajan tallennus
+                kursori.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
+                cash_now = Decimal(kursori.fetchone()[0])
+                price = Decimal(plane_data['purchase_price'])
+                if cash_now < price:
+                    return False
+
+                # 2. Poista ilmoitus markkinoilta
+                kursori.execute("DELETE FROM market_aircraft WHERE market_id = %s", (plane_data['market_id'],))
+                if kursori.rowcount == 0:
+                    print("⚠️  Joku ehti ostaa koneen ennen sinua!");
+                    return False
+
+                # 3. Lisää kone pelaajan laivastoon
+                registration = self._generate_registration()
+                kursori.execute(
+                    """
+                    INSERT INTO aircraft (model_code, current_airport_ident, registration, acquired_day, purchase_price,
+                                          condition_percent, hours_flown, status, save_id)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, 'IDLE', %s)
+                    """,
+                    (
+                        plane_data['model_code'],
+                        self._get_primary_base_ident() or 'EFHK',  # Sijoitetaan oletuksena pääkonttorille
+                        registration,
+                        self.current_day,
+                        price,
+                        plane_data['condition_percent'],
+                        plane_data['hours_flown'],
+                        self.save_id
+                    )
+                )
+
+                # 4. Päivitä pelaajan kassa
+                new_cash = (cash_now - price).quantize(Decimal("0.01"))
+                kursori.execute("UPDATE game_saves SET cash = %s, updated_at = %s WHERE save_id = %s",
+                                (new_cash, datetime.utcnow(), self.save_id))
+
+                yhteys.commit()
+                self.cash = new_cash
+                return True
+            except Exception as e:
+                yhteys.rollback()
+                print(f"❌ Virhe ostotapahtumassa: {e}");
+                return False
+
     # ---------- Päivitykset: ECO ----------
 
     def upgrade_aircraft_menu(self) -> None:
         """
-        Interaktiivinen valikko ECO-päivityksille.
-        Näyttää: nykyinen taso, hinta seuraavalle tasolle, eco-kerroin nyt -> seuraava.
+        Interaktiivinen valikko ECO-päivityksille, joka näyttää oikeat ennusteet.
         """
         aircrafts = fetch_player_aircrafts_with_model_info(self.save_id)
         if not aircrafts:
-            print("ℹ️  Sinulla ei ole vielä koneita.")
-            input("\n↩︎ Enter jatkaaksesi...")
+            print("ℹ️  Sinulla ei ole vielä koneita.");
+            input("\n↩︎ Enter jatkaaksesi...");
             return
 
         _icon_title("ECO-päivitykset")
         menu_rows = []
         for idx, row in enumerate(aircrafts, start=1):
             aircraft_id = row["aircraft_id"]
-            state = get_current_aircraft_upgrade_state(aircraft_id, UPGRADE_CODE)
+            state = get_current_aircraft_upgrade_state(aircraft_id)
             cur_level = int(state["level"])
             next_level = cur_level + 1
 
-            base_eco = row.get("eco_fee_multiplier") or 1.0
+            # Lasketaan nykyinen ja tuleva kerroin KORJATULLA logiikalla
+            base_eco = float(row.get("eco_fee_multiplier") or 1.0)
             current_eco = compute_effective_eco_multiplier(aircraft_id, base_eco)
-            factor = state["eco_factor_per_level"]
-            floor = state["eco_floor"]
-            new_eco = float(max(floor, _to_dec(base_eco) * (factor ** _to_dec(next_level))))
+
+            # Ennustetaan tuleva kerroin simuloimalla yhtä lisätasoa
+            factor_per_level = Decimal("1.05")
+            next_level_multiplier = Decimal(str(base_eco)) * (factor_per_level ** next_level)
+            new_eco = float(max(Decimal("0.50"), min(next_level_multiplier, Decimal("5.00"))))
 
             cost = calc_aircraft_upgrade_cost(row, next_level)
-            model_name = row.get("model_name") or row.get("model_code")
-            registration = row.get("registration")
 
             print(
-                f"{idx:>2}) ♻️ {model_name} ({registration}) | Taso: {cur_level} → {next_level} | "
-                f"Eco: {current_eco:.2f} → {new_eco:.2f} | 💶 {self._fmt_money(cost)}"
-            )
-            menu_rows.append((row, cur_level, next_level, cost, factor, floor))
+                f"{idx:>2}) ♻️ {row['model_name']} ({row['registration']}) | Taso: {cur_level} → {next_level} | Eco: {current_eco:.2f} → {new_eco:.2f} | 💶 {self._fmt_money(cost)}")
+            menu_rows.append((row, cur_level, next_level, cost))
 
         choice = input("Valinta numerolla (tyhjä = peruuta): ").strip()
-        if not choice:
-            return
+        if not choice: return
         try:
             sel = int(choice)
-            if sel < 1 or sel > len(menu_rows):
-                print("⚠️  Virheellinen valinta.")
+            if not (1 <= sel <= len(menu_rows)):
+                print("⚠️  Virheellinen valinta.");
                 return
         except ValueError:
-            print("⚠️  Virheellinen valinta.")
+            print("⚠️  Virheellinen valinta.");
             return
 
-        row, cur_level, next_level, cost, factor, floor = menu_rows[sel - 1]
+        row, cur_level, next_level, cost = menu_rows[sel - 1]
         aircraft_id = row["aircraft_id"]
-        model_name = row.get("model_name") or row.get("model_code")
-        registration = row.get("registration")
 
-        if self.cash < _to_dec(cost):
-            print(f"❌ Kassa ei riitä päivitykseen. Tarvitset {self._fmt_money(cost)}, sinulla on {self._fmt_money(self.cash)}.")
-            input("\n↩︎ Enter jatkaaksesi...")
+        if self.cash < cost:
+            print(f"❌ Kassa ei riitä. Tarvitset {self._fmt_money(cost)}, sinulla on {self._fmt_money(self.cash)}.");
+            input("\n↩︎ Enter jatkaaksesi...");
             return
 
-        base_eco = row.get("eco_fee_multiplier") or 1.0
-        current_eco = compute_effective_eco_multiplier(aircraft_id, base_eco)
-        new_eco = float(max(floor, _to_dec(base_eco) * (factor ** _to_dec(next_level))))
-
-        print(f"\nPäivitetään {model_name} ({registration}) tasolta {cur_level} tasolle {next_level}")
-        print(f"💶 Hinta: {self._fmt_money(cost)} | ♻️  Eco: {current_eco:.2f} → {new_eco:.2f}")
+        # Vahvistusdialogi näyttää myös oikeat, päivitetyt arvot
+        print(f"\nPäivitetään {row['model_name']} ({row['registration']}) tasolle {next_level}")
+        print(f"💶 Hinta: {self._fmt_money(cost)}")
         confirm = input("Vahvista (k/e): ").strip().lower()
         if confirm != "k":
-            print("❎ Peruutettu.")
+            print("❎ Peruutettu.");
             return
 
         try:
-            apply_aircraft_upgrade(
-                aircraft_id=aircraft_id,
-                installed_day=self.current_day,
-                cost=cost,
-                upgrade_code=UPGRADE_CODE,
-                eco_factor_per_level=factor,
-                eco_floor=floor
-            )
-            self._add_cash(-_to_dec(cost))
+            # Kutsutaan yksinkertaistettua funktiota ilman turhia parametreja
+            apply_aircraft_upgrade(aircraft_id=aircraft_id, installed_day=self.current_day)
+            self._add_cash(-cost)
             print("✅ Päivitys tehty.")
         except Exception as e:
             print(f"❌ Päivitys epäonnistui: {e}")
-
         input("\n↩︎ Enter jatkaaksesi...")
 
-    #Haetaan rikkinäiset koneet
-    #Vain tämän tallennuksen koneet, condition percent < 100
-    #Tuodaan mukaan mallin nimi ja tyyppi jotta saadaan informatiivinen rivi
+
+    # ---------- Lentokoneiden korjaus ----------
 
     def _fetch_broken_planes(self) -> List[dict]:
         """
@@ -1463,7 +1592,7 @@ class GameSession:
 
         dep_ident = plane["current_airport_ident"]
         speed_kts = float(plane.get("cruise_speed_kts") or 200.0)
-        speed_km_per_day = max(1.0, speed_kts * 1.852 * 24.0)
+        speed_km_per_day = max(1.0, speed_kts * 1.852 * 24.0 * 2.0)
         capacity = int(plane.get("base_cargo_kg") or 0) or 1
 
         # Yritä käyttää tehokasta eco-kerrointa (malli + upgradet); fallback: plane.eco_fee_multiplier
@@ -1769,12 +1898,13 @@ class GameSession:
 
     def advance_to_next_day(self, silent: bool = False) -> dict:
         """
-        Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
-        - Palauttaa yhteenvedon: {"arrivals": int, "earned": Decimal}
-        - silent=True: ei tulostuksia eikä Enter-pysäytystä (soveltuu pikakelaus-looppeihin).
-        - Joka 30. päivä veloitetaan kuukausilaskut.
-        HUOM: Python 3.9 -yhteensopiva: käytetään datetime.utcnow().
-        """
+                Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
+                Tarkistaa myös, onko joutilaita koneita väärillä kentillä ja lähettää ne kotiin.
+                """
+        # --- UUSI OSA: LÄHETÄ KONEET KOTIIN ---------------------------------
+        # Ajetaan tämä vain joka 3. päivä suorituskyvyn säästämiseksi pikakelauksessa
+        if self.current_day % 3 == 0:
+            self._initiate_return_flights_for_idle_aircraft(silent=silent)
 
         new_day = self.current_day + 1
         arrivals_count = 0
@@ -1807,6 +1937,7 @@ class GameSession:
                            f.aircraft_id,
                            f.arr_ident,
                            f.arrival_day,
+                           f.dep_day,
                            c.deadline_day,
                            c.reward,
                            c.penalty
@@ -1823,6 +1954,8 @@ class GameSession:
 
                 for rd in arrivals:
                     # Salli sekä dict- että tuple-rivit
+                    dep_day = int(rd["dep_day"] if isinstance(rd, dict) else rd[5])
+                    arr_day = int(rd["arrival_day"] if isinstance(rd, dict) else rd[4])
                     flight_id = rd["flight_id"] if isinstance(rd, dict) else rd[0]
                     contract_id = rd["contract_id"] if isinstance(rd, dict) else rd[1]
                     aircraft_id = rd["aircraft_id"] if isinstance(rd, dict) else rd[2]
@@ -1831,6 +1964,15 @@ class GameSession:
                     reward = _to_dec(rd["reward"] if isinstance(rd, dict) else rd[6])
                     penalty = _to_dec(rd["penalty"] if isinstance(rd, dict) else rd[7])
 
+                    # Lasketaan lennon kesto ja lisätään tunnit koneen tietoihin
+                    flight_duration_days = arr_day - dep_day
+                    hours_to_add = max(0, flight_duration_days) * 24
+
+                    if hours_to_add > 0:
+                        kursori.execute(
+                            "UPDATE aircraft SET hours_flown = hours_flown + %s WHERE aircraft_id = %s",
+                            (hours_to_add, aircraft_id),
+                        )
                     # Lennon tila saapuneeksi
                     kursori.execute("UPDATE flights SET status = 'ARRIVED' WHERE flight_id = %s", (flight_id,))
 
@@ -1899,10 +2041,7 @@ class GameSession:
 
         return {"arrivals": arrivals_count, "earned": total_delta}
 
-
-
-
-
+    # ------------ VEROTTAJA TULEE, KUU VAIHTUU --------------
 
     def _process_monthly_bills(self, silent: bool = False) -> None:
         """
@@ -1980,6 +2119,81 @@ class GameSession:
             if not silent:
                 print(f"❌ Laskujen veloitus epäonnistui: {e}")
 
+    # ---------- Eksyneet koneet kotikentille ------------
+
+    def _initiate_return_flights_for_idle_aircraft(self, silent: bool = False):
+        """
+        Tarkistaa kaikki IDLE-tilassa olevat koneet. Jos kone on vieraalla kentällä,
+        se luo sille automaattisen paluulennon lähimpään omistettuun tukikohtaan.
+        """
+        owned_bases = {b['base_ident']: b for b in fetch_owned_bases(self.save_id)}
+        if not owned_bases:
+            return  # Ei tukikohtia, ei voida palata kotiin
+
+        sql = """
+            SELECT a.aircraft_id, a.current_airport_ident, am.cruise_speed_kts, am.co2_kg_per_km
+            FROM aircraft a JOIN aircraft_models am ON a.model_code = am.model_code
+            WHERE a.save_id = %s AND a.status = 'IDLE' 
+              AND a.current_airport_ident NOT IN ({})
+        """.format(','.join(['%s'] * len(owned_bases)))
+
+        params = [self.save_id] + list(owned_bases.keys())
+
+        with get_connection() as yhteys:
+            kursori = yhteys.cursor(dictionary=True)
+            kursori.execute(sql, tuple(params))
+            stranded_planes = kursori.fetchall() or []
+
+            if not stranded_planes:
+                return
+
+            if not silent:
+                print("ℹ️ Havaittu joutilaita koneita vierailla kentillä, aloitetaan paluulennot...")
+
+            for plane in stranded_planes:
+                current_coords = self._get_airport_coords(plane['current_airport_ident'])
+                if not current_coords:
+                    continue
+
+                # Etsi lähin oma tukikohta
+                closest_base_ident = None
+                min_dist = float('inf')
+
+                for base_ident in owned_bases:
+                    base_coords = self._get_airport_coords(base_ident)
+                    if base_coords:
+                        dist = self._haversine_km(current_coords[0], current_coords[1], base_coords[0],
+                                                  base_coords[1])
+                        if dist < min_dist:
+                            min_dist = dist
+                            closest_base_ident = base_ident
+
+                if closest_base_ident:
+                    # Luo paluulento
+                    speed_kts = float(plane.get("cruise_speed_kts") or 200.0)
+                    speed_km_per_day = speed_kts * 1.852 * 24.0 * 2.0  # Tuplataan nopeus
+                    duration_days = max(1, math.ceil(min_dist / speed_km_per_day))
+                    arrival_day = self.current_day + duration_days
+                    co2_per_km = Decimal(str(plane.get("co2_kg_per_km") or 0.2))
+                    emissions = float((Decimal(min_dist) * co2_per_km).quantize(Decimal("0.01")))
+
+                    try:
+                        kursori.execute(
+                            "INSERT INTO flights (created_day, dep_day, arrival_day, status, distance_km, emission_kg_co2, dep_ident, arr_ident, aircraft_id, save_id, contract_id) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL)",
+                            (self.current_day, self.current_day, arrival_day, "ENROUTE_RTB", min_dist, emissions,
+                             plane['current_airport_ident'], closest_base_ident, plane['aircraft_id'], self.save_id)
+                        )
+                        kursori.execute(
+                            "UPDATE aircraft SET status = 'BUSY_RTB' WHERE aircraft_id = %s",
+                            (plane['aircraft_id'],)
+                        )
+                        if not silent:
+                            print(
+                                f"  ✈️  Kone {plane['aircraft_id']} palaa kentältä {plane['current_airport_ident']} kotiin ({closest_base_ident}). ETA: päivä {arrival_day}.")
+                    except Exception as e:
+                        if not silent:
+                            print(f"  ❌ Paluulennon luonti koneelle {plane['aircraft_id']} epäonnistui: {e}")
+
     # ---------- Pikakelaus ---------
 
     def fast_forward_days(self, days: int) -> None:
@@ -1995,7 +2209,7 @@ class GameSession:
         earned_total = Decimal("0.00")
 
         for _ in range(days):
-            summary = self.advance_to_next_day(silent=True)
+            summary = self.advance_to_next_day(silent=False)
             arrived_total += int(summary.get("arrivals", 0))
             earned_total += _to_dec(summary.get("earned", 0))
             if self.status == "BANKRUPT":
@@ -2473,6 +2687,153 @@ class GameSession:
                 pass
             yhteys.close()
 
+    # -------------------------------------------------
+    # SALAINEN KERHOHUONE (SIIS TOSI TOSI SALAINEN)
+    # -------------------------------------------------
+    def clubhouse_menu(self):
+        """Salaisen Kerhohuoneen päävalikko."""
+        while True:
+            _icon_title("Kerhohuone 666")
+            print(f"Tervetuloa Kerhohuoneelle, {self.player_name}!")
+            print(f"Kassasi saldo: {self._fmt_money(self.cash)}")
+            print("\nMitä haluat pelata?")
+            print("1) 🪙 Kruuna vai Klaava")
+            print("2) 🎲 Suurempi vai Pienempi")
+            print("3) 🎰 Yksikätinen Rosvo")
+            print("0) 🚪 Poistu takaisin toimistolle")
+
+            choice = input("Valinta: ").strip()
+
+            if choice == "1":
+                self._clubhouse_coin_flip()
+            elif choice == "2":
+                self._clubhouse_high_low()
+            elif choice == "3":
+                self._clubhouse_slot_machine()
+            elif choice == "0":
+                print("Näkemiin ja tervetuloa uudelleen!")
+                break
+            else:
+                print("⚠️ Tuntematon peli.")
+
+            if self.cash <= 0:
+                print("\n💀 Rahat loppuivat! Kerhohuoneen ovet sulkeutuvat osaltasi.")
+                self._set_status("BANKRUPT")
+                break
+            input("\n↩︎ Paina Enter jatkaaksesi...")
+
+    def _clubhouse_coin_flip(self):
+        """Peli 1: Kruuna vai Klaava."""
+        _icon_title("Kruuna vai Klaava")
+        print(f"Saldo: {self._fmt_money(self.cash)}")
+        try:
+            panos = Decimal(input("Aseta panos (0 = peruuta): ").strip())
+        except Exception:
+            print("⚠️ Virheellinen panos.");
+            return
+        if panos <= 0: return
+        if panos > self.cash: print("❌ Ei riittävästi rahaa!"); return
+
+        valinta = input("Valitse kruuna (kr) vai klaava (kl): ").strip().lower()
+        if valinta not in ["kr", "kl"]: print("⚠️ Valitse 'kr' tai 'kl'."); return
+
+        voittoheitto = random.choices(["kr", "kl"], weights=[49, 51], k=1)[0]
+        print("\nHeitetään kolikkoa...");
+        time.sleep(1)
+
+        if valinta == voittoheitto:
+            print(f"🎉 Tulos oli '{voittoheitto}'! Voitit {self._fmt_money(panos)}!")
+            self._add_cash(panos)
+        else:
+            print(f"💸 Tulos oli '{voittoheitto}'. Hävisit {self._fmt_money(panos)}.")
+            self._add_cash(-panos)
+
+    def _clubhouse_high_low(self):
+        """Peli 2: Suurempi vai Pienempi."""
+        _icon_title("Suurempi vai Pienempi")
+        print(f"Saldo: {self._fmt_money(self.cash)}")
+        try:
+            panos = Decimal(input("Aseta panos (0 = peruuta): ").strip())
+        except Exception:
+            print("⚠️ Virheellinen panos.");
+            return
+        if panos <= 0: return
+        if panos > self.cash: print("❌ Ei riittävästi rahaa!"); return
+
+        noppa1, noppa2 = random.randint(1, 6), random.randint(1, 6)
+        print(f"\nEnsimmäinen noppa heitti: {noppa1}")
+        valinta = input("Onko seuraava noppa suurempi (s) vai pienempi (p)? ").strip().lower()
+        if valinta not in ["s", "p"]: print("⚠️ Valitse 's' tai 'p'."); return
+
+        print(f"Toinen noppa heitti: {noppa2}");
+        time.sleep(1)
+
+        tulos_oikein = (valinta == "s" and noppa2 > noppa1) or \
+                       (valinta == "p" and noppa2 < noppa1)
+
+        if noppa1 == noppa2:
+            print("💸 Tasapeli! Talo voittaa aina. Hävisit panoksesi.")
+            self._add_cash(-panos)
+        elif tulos_oikein:
+            print(f"🎉 Oikein! Voitit {self._fmt_money(panos)}!")
+            self._add_cash(panos)
+        else:
+            print(f"💸 Väärin! Hävisit {self._fmt_money(panos)}.")
+            self._add_cash(-panos)
+
+    def _clubhouse_slot_machine(self):
+        """Peli 3: Yksikätinen Rosvo."""
+        _icon_title("Yksikätinen Rosvo")
+        print(f"Saldo: {self._fmt_money(self.cash)}")
+        try:
+            panos = Decimal(input("Aseta panos (0 = peruuta): ").strip())
+        except Exception:
+            print("⚠️ Virheellinen panos.");
+            return
+        if panos <= 0: return
+        if panos > self.cash: print("❌ Ei riittävästi rahaa!"); return
+
+        self._add_cash(-panos)
+        print(f"Panos {self._fmt_money(panos)} asetettu. Onnea peliin!")
+
+        symbols = ['🍒', '🍋', '🔔', '💎', '💰'];
+        weights = [40, 30, 20, 9, 1]
+        reels = random.choices(symbols, weights=weights, k=3)
+        print("\nKiekot pyörivät...");
+        time.sleep(1)
+        print(f"| {reels[0]} | {reels[1]} | {reels[2]} |")
+
+        voitto = Decimal("0")
+        if reels[0] == '💰' and reels[1] == '💰' and reels[2] == '💰':
+            print("✨ JÄTTIPOTTI! ✨");
+            voitto = panos * 50
+        elif reels[0] == '💎' and reels[1] == '💎' and reels[2] == '💎':
+            print("💎 Timanttivoitto!");
+            voitto = panos * 20
+        elif reels[0] == '🔔' and reels[1] == '🔔' and reels[2] == '🔔':
+            print("🔔 Kellot soivat!");
+            voitto = panos * 10
+        elif reels[0] == '🍋' and reels[1] == '🍋' and reels[2] == '🍋':
+            print("🍋 Sitruunavoitto!");
+            voitto = panos * 5
+        elif reels[0] == '🍒' and reels[1] == '🍒' and reels[2] == '🍒':
+            print("🍒 Kirsikkavoitto!");
+            voitto = panos * 3
+        elif reels[0] == '🍒' and reels[1] == '🍒':
+            print("🍒 Pieni kirsikkavoitto!");
+            voitto = panos * 2
+
+        if voitto > 0:
+            print(f"🎉 Voitit {self._fmt_money(voitto)}!")
+            self._add_cash(voitto)
+        else:
+            print("💸 Ei voittoa tällä kertaa.")
+
+    # -------------------------------------------------
+    # SALAINEN KERHOHUONE (TOSI TOSI SALAINEN)
+    # -------------------------------------------------
+
+
     def _insert_gift_aircraft_tx(
             self,
             model_code: str,
@@ -2560,3 +2921,34 @@ class GameSession:
         """
         d = _to_dec(amount).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         return f"{d:,.2f} €".replace(",", " ").replace(".", ",")
+
+    # Good Game, tässä vähän tilastoja
+
+    def show_end_game_stats(self):
+        """Hakee ja tulostaa yhteenvedon pelin statistiikoista."""
+        _icon_title("Pelin yhteenveto")
+        print(f"Pelaaja: {self.player_name} | Lopputulos: {self.status}")
+
+        sql_stats = """
+                    SELECT (SELECT SUM(hours_flown) FROM aircraft WHERE save_id = gs.save_id)    AS total_hours, \
+                           (SELECT SUM(emission_kg_co2) FROM flights WHERE save_id = gs.save_id) AS total_emissions, \
+                           (SELECT COUNT(*) FROM aircraft WHERE save_id = gs.save_id)            AS total_aircraft
+                    FROM game_saves gs
+                    WHERE gs.save_id = %s; \
+                    """
+        with get_connection() as yhteys:
+            kursori = yhteys.cursor(dictionary=True)
+            kursori.execute(sql_stats, (self.save_id,))
+            stats = kursori.fetchone()
+
+        if stats:
+            total_hours = int(stats.get("total_hours") or 0)
+            total_emissions_kg = float(stats.get("total_emissions") or 0.0)
+            total_aircraft = int(stats.get("total_aircraft") or 0)
+
+            print("\n--- Tilastot ---")
+            print(f"✈️  Koneita laivastossa: {total_aircraft} kpl")
+            print(f"⏱️  Lentotunteja yhteensä: {total_hours} h")
+            print(f"☁️  CO2-päästöjä yhteensä: {total_emissions_kg:,.0f} kg".replace(",", " "))
+
+        print("\nKiitos kun pelasit!")

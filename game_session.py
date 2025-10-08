@@ -416,14 +416,14 @@ class GameSession:
     """
 
     def __init__(
-        self,
-        save_id: int,
-        current_day: Optional[int] = None,
-        player_name: Optional[str] = None,
-        cash: Optional[Decimal] = None,
-        status: Optional[str] = None,
-        rng_seed: Optional[int] = None,
-        difficulty: Optional[str] = None,
+            self,
+            save_id: int,
+            current_day: Optional[int] = None,
+            player_name: Optional[str] = None,
+            cash: Optional[Decimal] = None,
+            status: Optional[str] = None,
+            rng_seed: Optional[int] = None,
+            difficulty: Optional[str] = None,
     ):
         # Tallennetaan konstruktorin parametrit – puuttuvat täydennetään kannasta
         self.save_id = int(save_id)
@@ -443,13 +443,13 @@ class GameSession:
 
     @classmethod
     def new_game(
-        cls,
-        name: str,
-        cash: float = 300000.0,
-        show_intro: bool = True,
-        rng_seed: Optional[int] = None,
-        status: str = "ACTIVE",
-        default_difficulty: str = "NORMAL",
+            cls,
+            name: str,
+            cash: float = 300000.0,
+            show_intro: bool = True,
+            rng_seed: Optional[int] = None,
+            status: str = "ACTIVE",
+            default_difficulty: str = "NORMAL",
     ) -> "GameSession":
         """
         Luo uuden tallennuksen ja käynnistää pelin.
@@ -465,7 +465,7 @@ class GameSession:
         except Exception:
             # ei kaadeta peliä, jos migraatio epäonnistuu – voidaan ajaa myöhemmin
             pass
-#
+        #
         yhteys = get_connection()
         kursori = yhteys.cursor()
         try:
@@ -474,9 +474,9 @@ class GameSession:
             kursori.execute(
                 """
                 INSERT INTO game_saves
-                  (player_name, current_day, cash, difficulty, status, rng_seed, created_at, updated_at)
+                (player_name, current_day, cash, difficulty, status, rng_seed, created_at, updated_at)
                 VALUES
-                  (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     name,
@@ -891,22 +891,36 @@ class GameSession:
     #Tuodaan mukaan mallin nimi ja tyyppi jotta saadaan informatiivinen rivi
 
     def _fetch_broken_planes(self) -> List[dict]:
-        sql = """
-            SELECT 
-                a.aircraft_id,
-                a.registration,
-                a.status,
-                a.condition_percent,
-                am.model_name,
-                am.model_code,
-            FROM aircraft a
-            JOIN aircraft_models am ON am.model_code = a.model_code
-            WHERE a.save_id = %s
-            AND (a.sold_day IS NULL OR a.sold_day = 0)
-            AND a.condition_percent IS NOT NULL 
-            AND a.condition_percent < 100
-            ORDER BY a.aircraft_id
         """
+        Hae kaikki koneet joiden kunto on alle 100%.
+
+        Palauttaa:
+            List[dict] jossa jokaisessa:
+            - aircraft_id: koneen ID
+            - registration: rekisteritunnus
+            - status: koneen tila (IDLE/BUSY)
+            - condition_percent: kunnon prosentti (0-100)
+            - model_name: mallin nimi näyttöä varten
+            - model_code: mallin koodi
+
+        Käytetään huoltovalikossa listaamaan korjattavat koneet.
+        """
+        sql = """
+              SELECT a.aircraft_id, \
+                     a.registration, \
+                     a.status, \
+                     a.condition_percent, \
+                     am.model_name, \
+                     am.model_code
+              FROM aircraft a
+                       JOIN aircraft_models am ON am.model_code = a.model_code
+              WHERE a.save_id = %s
+                AND (a.sold_day IS NULL OR a.sold_day = 0)
+                AND a.condition_percent IS NOT NULL
+                AND a.condition_percent < 100
+              ORDER BY a.aircraft_id \
+              """
+
         with get_connection() as yhteys:
             kursori = yhteys.cursor(dictionary=True)
             kursori.execute(sql, (self.save_id,))
@@ -1002,21 +1016,34 @@ class GameSession:
             except Exception:
                 pass
 
+    def _repair_many_to_full_tx(self, aircraft_ids: List[int]) -> bool:
+        """
+        Korjaa useita koneita kerralla täyteen kuntoon.
 
-        # Massakorjaus (Korjaa useita koneita)
-        # Prosessi:
-        # - Lukitaan kaikki annetut koneet yhdellä kyselyllä (SELECT ... IN(...) FOR UPDATE)
-        # - Lasketaan yhteenlaskettu kustannus vain niille, jotka:
-        # - ovat alle 100% kunnossa, ja eivät ole lennolla (BUSY)
-        # - Lukitaan kassa ja tarkistetaan riittävyys
-        # - Päivitetään kaikki korjattavat kerralla, veloitetaan kertaotteella
-        # - Tulostetaan yhteenveto
-        # Huom:
-        # Jos yhtään korjattavaa ei löydy, perutaan (palauttaa True).
+        Prosessi:
+        1. Lukitaan kaikki annetut koneet yhdellä kyselyllä (SELECT ... IN(...) FOR UPDATE)
+        2. Lasketaan yhteenlaskettu kustannus vain niille koneille jotka:
+           - Ovat alle 100% kunnossa
+           - Eivät ole lennolla (BUSY)
+        3. Lukitaan kassa ja tarkistetaan riittävyys
+        4. Päivitetään kaikki korjattavat koneet kerralla
+        5. Veloitetaan kokonaiskustannus kertaotteella
+        6. Tulostetaan yhteenveto
 
-    def _repair_many_to_full_tx(self,aircraft_ids: List[int]) -> bool:
+        Args:
+            aircraft_ids: Lista koneiden ID:itä jotka halutaan korjata
+
+        Returns:
+            True jos korjaus onnistui (tai ei ollut mitään korjattavaa)
+            False jos kassa ei riitä
+
+        Huom:
+        - Jos yhtään korjattavaa ei löydy, palauttaa True (ei virhe)
+        - Lennolla olevat koneet ohitetaan automaattisesti
+        - Käyttää transaktiota (atominen operaatio)
+        """
         if not aircraft_ids:
-            print(" ℹ️ Ei valittuja koneita.")
+            print("ℹ️ Ei valittuja koneita.")
             return True
 
         yhteys = get_connection()
@@ -1024,69 +1051,85 @@ class GameSession:
             kursori = yhteys.cursor(dictionary=True)
             yhteys.start_transaction()
 
+            # 1. Lukitaan kaikki annetut koneet ja haetaan niiden tiedot
             placeholders = ",".join(["%s"] * len(aircraft_ids))
             kursori.execute(
                 f"""
-                SELECT aircraft_id, condition_percent, status 
-                FROM aircraft 
-                WHERE aircraft_id in ({placeholders})
-                FOR UPDATE
-                """,
+                    SELECT aircraft_id, condition_percent, status 
+                    FROM aircraft 
+                    WHERE aircraft_id IN ({placeholders})
+                    FOR UPDATE
+                    """,
                 tuple(aircraft_ids),
             )
             rows = kursori.fetchall() or []
 
-            # 1. Laske korjaustarve ja kustannus
+            # 2. Lasketaan korjaustarve ja kokonaiskustannus
             total_cost = Decimal("0.00")
             repair_ids: List[int] = []
+
             for r in rows:
                 aid = int(r["aircraft_id"])
-                cond = int(r.get["condition_percent"]) or 0
-                status_now = (r.get["status"] or "IDLE").upper()
+                cond = int(r.get("condition_percent") or 0)  # KORJATTU: oli .get["..."]
+                status_now = (r.get("status") or "IDLE").upper()
+
+                # Hypätään yli jos kone on lennolla (ei voi korjata)
                 if status_now == "BUSY":
-                    # Hypätään yli, lennolla olevaa konetta ei voi korjata
                     continue
+
+                # Hypätään yli jos kone on jo täydessä kunnossa
                 if cond >= 100:
                     continue
+
+                # Lasketaan tämän koneen korjauskustannus
                 need = 100 - cond
                 total_cost += (Decimal(need) * REPAIR_COST_PER_PERCENT)
                 repair_ids.append(aid)
 
+            # Pyöristetään kokonaiskustannus
             total_cost = total_cost.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
+            # 3. Jos ei ole mitään korjattavaa, lopetetaan tähän
             if not repair_ids:
                 yhteys.rollback()
-                print(" Ei korjattavaa.")
+                print("ℹ️ Ei korjattavaa (koneet jo kunnossa tai lennolla).")
                 return True
 
-            # 2) Lukitse kassa ja tarkista
-            kursori.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
+            # 4. Lukitaan kassa ja tarkistetaan riittävyys
+            kursori.execute(
+                "SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE",
+                (self.save_id,)
+            )
             cr = kursori.fetchone()
             cash_now = _to_dec(cr["cash"] if cr and "cash" in cr else 0)
 
             if cash_now < total_cost:
                 yhteys.rollback()
-                print(f"Kassa ei riitä kaikkien korjaamiseen. Tarvitaan {self._fmt_money(total_cost)}.")
+                print(
+                    f"❌ Kassa ei riitä kaikkien korjaamiseen. Tarvitaan {self._fmt_money(total_cost)}, kassassa {self._fmt_money(cash_now)}.")
                 return False
 
-            # 3) Päivitä koneet: set 100% / IDLE kaikille korjattaville
+            # 5. Päivitetään kaikki korjattavat koneet kerralla
             placeholders2 = ",".join(["%s"] * len(repair_ids))
             kursori.execute(
-                f"UPDATE aircraft SET conditon_percent = 100, status = 'IDLE' WHERE aircraft_id IN ({placeholders2})",
+                f"UPDATE aircraft SET condition_percent = 100, status = 'IDLE' WHERE aircraft_id IN ({placeholders2})",
+                # KORJATTU: oli "conditon_percent" (kirjoitusvirhe)
                 tuple(repair_ids),
             )
 
-
-            # 4) Veloita kertaotteella
+            # 6. Veloitetaan kokonaiskustannus kassasta
             new_cash = (cash_now - total_cost).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
             kursori.execute(
                 "UPDATE game_saves SET cash = %s, updated_at = %s WHERE save_id = %s",
                 (new_cash, datetime.utcnow(), self.save_id),
             )
 
+            # 7. Commitoidaan kaikki muutokset
             yhteys.commit()
+
+            # 8. Päivitetään session kassa-arvo ja tulostetaan yhteenveto
             self.cash = new_cash
-            print(f"✅ Korjattu {len(repair_ids)} konetta. Maksu {self._fmt_money(total_cost)}.")
+            print(f"✅ Korjattu {len(repair_ids)} konetta. Kokonaishinta: {self._fmt_money(total_cost)}.")
             return True
 
         except Exception as e:
@@ -1123,13 +1166,13 @@ class GameSession:
             est = (Decimal(miss) * REPAIR_COST_PER_PERCENT).quantize(Decimal("0.01"))
             name = r.get("model_name") or r.get("model_code") or "Unknown"
             st = r.get("status") or "_"
-            print(f"{i:>2} ✈️ {name} ({r.registeration}) | Kunto {cond}% | Status {st} | Arvio {self.fmt_money(est)}")
+            print(f"{i:>2} ✈️ {name} ({r.registration}) | Kunto {cond}% | Status {st} | Arvio {self.fmt_money(est)}")
             print("\n0) Korjaa kaikki listalla")
 
             sel = input("Valitse numero (tyhjä = peruuta): ").strip()
 
         if not sel:
-                return
+            return
 
         if sel == "0":
             ids = [int(r["aircaft_id"]) for r in broken]
@@ -1486,8 +1529,8 @@ class GameSession:
                        f.arrival_day,
                        f.status AS flight_status
                 FROM contracts c
-                LEFT JOIN aircraft a ON a.aircraft_id = c.aircraft_id
-                LEFT JOIN flights f ON f.contract_id = c.contractId
+                         LEFT JOIN aircraft a ON a.aircraft_id = c.aircraft_id
+                         LEFT JOIN flights f ON f.contract_id = c.contractId
                 WHERE c.save_id = %s
                   AND c.status IN ('ACCEPTED', 'IN_PROGRESS')
                 ORDER BY c.deadline_day ASC, c.contractId ASC
@@ -1552,10 +1595,10 @@ class GameSession:
                        am.cruise_speed_kts,
                        am.eco_fee_multiplier
                 FROM aircraft a
-                JOIN aircraft_models am ON am.model_code = a.model_code
+                         JOIN aircraft_models am ON am.model_code = a.model_code
                 WHERE a.save_id = %s
                   AND a.status = 'IDLE'
-                  AND a.condition_percent >= 100 
+                  AND a.condition_percent >= 100
                 ORDER BY a.aircraft_id
                 """,
                 (self.save_id,),
@@ -1827,80 +1870,80 @@ class GameSession:
 
 
     def _process_monthly_bills(self, silent: bool = False) -> None:
-            """
-            Veloittaa kuukausittaiset kulut.
-            - HQ_MONTHLY_FEE
-            - MAINT_PER_AIRCRAFT per aktiivinen kone
-            - STARTER-koneille alennus (STARTER_MAINT_DISCOUNT)
-            - 60. päivästä alkaen kulut kasvavat korkoa korolle BILL_GROWTH_RATE-kertoimella.
-            Jos rahat eivät riitä: asetetaan status = BANKRUPT.
-            """
-            yhteys = get_connection()
+        """
+        Veloittaa kuukausittaiset kulut.
+        - HQ_MONTHLY_FEE
+        - MAINT_PER_AIRCRAFT per aktiivinen kone
+        - STARTER-koneille alennus (STARTER_MAINT_DISCOUNT)
+        - 60. päivästä alkaen kulut kasvavat korkoa korolle BILL_GROWTH_RATE-kertoimella.
+        Jos rahat eivät riitä: asetetaan status = BANKRUPT.
+        """
+        yhteys = get_connection()
+        try:
+            kursori = yhteys.cursor(dictionary=True)
+            # Laske aktiivisten (ei myytyjen) koneiden määrä ja STARTER-koneiden osuus
+            kursori.execute(
+                """
+                SELECT COUNT(*)                                                 AS total,
+                       SUM(CASE WHEN am.category = 'STARTER' THEN 1 ELSE 0 END) AS starters
+                FROM aircraft a
+                         JOIN aircraft_models am ON am.model_code = a.model_code
+                WHERE a.save_id = %s
+                  AND (a.sold_day IS NULL OR a.sold_day = 0)
+                """,
+                (self.save_id,),
+            )
+            r = kursori.fetchone() or {"total": 0, "starters": 0}
+            total_planes = int(r["total"] or 0)
+            starter_planes = int(r["starters"] or 0)
+        finally:
             try:
-                kursori = yhteys.cursor(dictionary=True)
-                # Laske aktiivisten (ei myytyjen) koneiden määrä ja STARTER-koneiden osuus
-                kursori.execute(
-                    """
-                    SELECT COUNT(*)                                                 AS total,
-                           SUM(CASE WHEN am.category = 'STARTER' THEN 1 ELSE 0 END) AS starters
-                    FROM aircraft a
-                             JOIN aircraft_models am ON am.model_code = a.model_code
-                    WHERE a.save_id = %s
-                      AND (a.sold_day IS NULL OR a.sold_day = 0)
-                    """,
-                    (self.save_id,),
-                )
-                r = kursori.fetchone() or {"total": 0, "starters": 0}
-                total_planes = int(r["total"] or 0)
-                starter_planes = int(r["starters"] or 0)
-            finally:
-                try:
-                    kursori.close()
-                except Exception:
-                    pass
-                try:
-                    yhteys.close()
-                except Exception:
-                    pass  # [cite: 449]
+                kursori.close()
+            except Exception:
+                pass
+            try:
+                yhteys.close()
+            except Exception:
+                pass  # [cite: 449]
 
-            # Lasketaan ensin laskun perussumma ilman korkoja
-            maint_starter = (MAINT_PER_AIRCRAFT * STARTER_MAINT_DISCOUNT) * starter_planes
-            maint_nonstarter = MAINT_PER_AIRCRAFT * max(0, total_planes - starter_planes)
-            base_bill = (HQ_MONTHLY_FEE + maint_starter + maint_nonstarter).quantize(Decimal("0.01"))  #
+        # Lasketaan ensin laskun perussumma ilman korkoja
+        maint_starter = (MAINT_PER_AIRCRAFT * STARTER_MAINT_DISCOUNT) * starter_planes
+        maint_nonstarter = MAINT_PER_AIRCRAFT * max(0, total_planes - starter_planes)
+        base_bill = (HQ_MONTHLY_FEE + maint_starter + maint_nonstarter).quantize(Decimal("0.01"))  #
 
-            # UUSI OSA: Laske "korkoa korolle" 60. päivästä alkaen
-            total_bill = base_bill
+        # UUSI OSA: Laske "korkoa korolle" 60. päivästä alkaen
+        total_bill = base_bill
+        if self.current_day >= 60:
+            # Lasketaan, monesko korollinen laskutuskausi on menossa.
+            # Päivä 60 = 1. kausi, Päivä 90 = 2. kausi jne.
+            growth_periods = (self.current_day // 30) - 1
+
+            # Sovelletaan korkoa korolle -kaavaa peruslaskuun
+            # Kaava: Loppusumma = Perussumma * (1 + korko)^kaudet
+            growth_multiplier = (1 + BILL_GROWTH_RATE) ** growth_periods
+            total_bill = (base_bill * growth_multiplier).quantize(Decimal("0.01"))
+
+        if not silent:
+            print("\n💸 Kuukausilaskut erääntyivät!")
+            print(f"   🏢Lainat, Vuokrat ja Huollot (perussumma): {self._fmt_money(base_bill)}")
             if self.current_day >= 60:
-                # Lasketaan, monesko korollinen laskutuskausi on menossa.
-                # Päivä 60 = 1. kausi, Päivä 90 = 2. kausi jne.
-                growth_periods = (self.current_day // 30) - 1
+                print(f"   📈 Inflaatiokorotus: +{((total_bill / base_bill - 1) * 100):.1f}%")
+            print(f"   ➖ Yhteensä maksettavaa: {self._fmt_money(total_bill)}")
 
-                # Sovelletaan korkoa korolle -kaavaa peruslaskuun
-                # Kaava: Loppusumma = Perussumma * (1 + korko)^kaudet
-                growth_multiplier = (1 + BILL_GROWTH_RATE) ** growth_periods
-                total_bill = (base_bill * growth_multiplier).quantize(Decimal("0.01"))
-
+        # Maksu tai konkurssi
+        if self.cash < total_bill:
             if not silent:
-                print("\n💸 Kuukausilaskut erääntyivät!")
-                print(f"   🏢Lainat, Vuokrat ja Huollot (perussumma): {self._fmt_money(base_bill)}")
-                if self.current_day >= 60:
-                    print(f"   📈 Inflaatiokorotus: +{((total_bill / base_bill - 1) * 100):.1f}%")
-                print(f"   ➖ Yhteensä maksettavaa: {self._fmt_money(total_bill)}")
+                print("💀 Rahat eivät riitä laskuihin. Yritys menee konkurssiin.")
+            self._set_status("BANKRUPT")
+            return
 
-            # Maksu tai konkurssi
-            if self.cash < total_bill:
-                if not silent:
-                    print("💀 Rahat eivät riitä laskuihin. Yritys menee konkurssiin.")
-                self._set_status("BANKRUPT")
-                return
-
-            try:
-                self._add_cash(-total_bill)
-                if not silent:
-                    print("✅ Laskut maksettu.")
-            except Exception as e:
-                if not silent:
-                    print(f"❌ Laskujen veloitus epäonnistui: {e}")
+        try:
+            self._add_cash(-total_bill)
+            if not silent:
+                print("✅ Laskut maksettu.")
+        except Exception as e:
+            if not silent:
+                print(f"❌ Laskujen veloitus epäonnistui: {e}")
 
     # ---------- Pikakelaus ---------
 
@@ -2065,32 +2108,32 @@ class GameSession:
             kursori.execute(
                 """
                 WITH max_tier AS (
-                  SELECT
-                    COALESCE(MAX(
-                      CASE bu.upgrade_code
-                        WHEN 'SMALL' THEN 1
-                        WHEN 'MEDIUM' THEN 2
-                        WHEN 'LARGE' THEN 3
-                        WHEN 'HUGE' THEN 4
-                        ELSE 0
-                      END
-                    ), 0) AS t
-                  FROM owned_bases ob
-                  JOIN base_upgrades bu ON bu.base_id = ob.base_id
-                  WHERE ob.save_id = %s
+                    SELECT
+                        COALESCE(MAX(
+                                         CASE bu.upgrade_code
+                                             WHEN 'SMALL' THEN 1
+                                             WHEN 'MEDIUM' THEN 2
+                                             WHEN 'LARGE' THEN 3
+                                             WHEN 'HUGE' THEN 4
+                                             ELSE 0
+                                             END
+                                 ), 0) AS t
+                    FROM owned_bases ob
+                             JOIN base_upgrades bu ON bu.base_id = ob.base_id
+                    WHERE ob.save_id = %s
                 )
                 SELECT am.model_code, am.manufacturer, am.model_name, am.purchase_price,
                        am.base_cargo_kg, am.range_km, am.cruise_speed_kts, am.category
                 FROM aircraft_models am
-                CROSS JOIN max_tier mt
+                         CROSS JOIN max_tier mt
                 WHERE am.category <> 'STARTER'
                   AND CASE am.category
-                        WHEN 'SMALL' THEN 1
-                        WHEN 'MEDIUM' THEN 2
-                        WHEN 'LARGE' THEN 3
-                        WHEN 'HUGE' THEN 4
-                        ELSE 0
-                      END <= mt.t
+                          WHEN 'SMALL' THEN 1
+                          WHEN 'MEDIUM' THEN 2
+                          WHEN 'LARGE' THEN 3
+                          WHEN 'HUGE' THEN 4
+                          ELSE 0
+                          END <= mt.t
                 ORDER BY am.purchase_price ASC, am.model_code ASC
                 """,
                 (self.save_id,),
@@ -2120,9 +2163,9 @@ class GameSession:
             kursori.execute(
                 """
                 INSERT INTO owned_bases
-                  (save_id, base_ident, base_name, acquired_day, purchase_cost, created_at, updated_at)
+                (save_id, base_ident, base_name, acquired_day, purchase_cost, created_at, updated_at)
                 VALUES
-                  (%s, %s, %s, %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     self.save_id,
@@ -2180,7 +2223,7 @@ class GameSession:
                 FROM owned_bases
                 WHERE save_id = %s
                 ORDER BY acquired_day ASC, base_id ASC
-                LIMIT 1
+                    LIMIT 1
                 """,
                 (self.save_id,),
             )
@@ -2320,13 +2363,13 @@ class GameSession:
     # ---------- Osto ja lahjakone ----------
 
     def _purchase_aircraft_tx(
-        self,
-        model_code: str,
-        current_airport_ident: str,
-        registration: str,
-        nickname: Optional[str],
-        purchase_price: Decimal,
-        base_id: Optional[int],
+            self,
+            model_code: str,
+            current_airport_ident: str,
+            registration: str,
+            nickname: Optional[str],
+            purchase_price: Decimal,
+            base_id: Optional[int],
     ) -> bool:
         """
         Atominen ostotapahtuma:
@@ -2349,13 +2392,13 @@ class GameSession:
             kursori.execute(
                 """
                 INSERT INTO aircraft
-                  (model_code, base_level, current_airport_ident, registration, nickname,
-                   acquired_day, purchase_price, condition_percent, status, hours_flown,
-                   sold_day, sale_price, save_id, base_id)
+                (model_code, base_level, current_airport_ident, registration, nickname,
+                 acquired_day, purchase_price, condition_percent, status, hours_flown,
+                 sold_day, sale_price, save_id, base_id)
                 VALUES
-                  (%s, %s, %s, %s, %s,
-                   %s, %s, %s, %s, %s,
-                   %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s,
+                     %s, %s, %s, %s, %s,
+                     %s, %s, %s, %s)
                 """,
                 (
                     model_code,
@@ -2396,11 +2439,11 @@ class GameSession:
             yhteys.close()
 
     def _insert_gift_aircraft_tx(
-        self,
-        model_code: str,
-        current_airport_ident: str,
-        base_id: int,
-        nickname: Optional[str] = None,
+            self,
+            model_code: str,
+            current_airport_ident: str,
+            base_id: int,
+            nickname: Optional[str] = None,
     ) -> None:
         """
         Lisää lahjakoneen (STARTER: DC3FREE) transaktion sisällä (hinta 0).
@@ -2417,13 +2460,13 @@ class GameSession:
             kursori.execute(
                 """
                 INSERT INTO aircraft
-                  (model_code, base_level, current_airport_ident, registration, nickname,
-                   acquired_day, purchase_price, condition_percent, status, hours_flown,
-                   sold_day, sale_price, save_id, base_id)
+                (model_code, base_level, current_airport_ident, registration, nickname,
+                 acquired_day, purchase_price, condition_percent, status, hours_flown,
+                 sold_day, sale_price, save_id, base_id)
                 VALUES
-                  (%s, %s, %s, %s, %s,
-                   %s, %s, %s, %s, %s,
-                   %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s,
+                     %s, %s, %s, %s, %s,
+                     %s, %s, %s, %s)
                 """,
                 (
                     model_code,

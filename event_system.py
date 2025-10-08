@@ -5,7 +5,10 @@ conn = get_connection()
 cursor = conn.cursor()
 class Event:
     Events = {}
-    def __init__(self, Cmax, Pmult, dmg, days, duration, sfx):
+    def __init__(self, id, name, description, Cmax, Pmult, dmg, days, duration, sfx):
+        self.id = id
+        self.name = name
+        self.description = description
         self.Cmax = Cmax
         self.Pmult = Pmult
         self.dmg = dmg
@@ -13,27 +16,27 @@ class Event:
         self.duration = duration
         self.sfx = sfx
 def RandomizeEvent():
-    query = 'SELECT event_name, chance_max FROM events'
+    query = 'SELECT event_name, chance_max FROM random_events'
     cursor.execute(query)
     events = cursor.fetchall()
     Event.Events = {name: chancesmax for name, chancesmax in events}
     eventName = random.choice(list(Event.Events.keys()))
     chance = random.randint(1, Event.Events[eventName])
-
     if chance == Event.Events[eventName]:
-        query = 'select * from events where event_name = f"{eventName}"'
+        query = f'select * from random_events where event_name = "{eventName}"'
     else:
-        query = 'select * from events where event_name = "Normal_Day"'
+        query = 'select * from random_events where event_name = "Normal Day"'
     cursor.execute(query)
     row = cursor.fetchone()
-    if row:
-        ActiveEvent = Event(*row)
-    if not row:
-        ActiveEvent = "None"
-        print("Nothing found, huh?")
+    print(row)
+    ActiveEvent = Event(*row)
     return ActiveEvent
 
-
+event = RandomizeEvent()
+print(event)
+print(f"name {event.name}")
+print(f"dmg {event.dmg}")
+print(f"days {event.days}")
 
 
 

@@ -3,8 +3,9 @@ import random
 from utils import get_connection
 conn = get_connection()
 cursor = conn.cursor()
-class Event:
-    Events = {}
+class FlightEvent:
+    FlightEvents = {}
+    currentFlightEvent = None
     def __init__(self, id, name, description, Cmax, Pmult, dmg, days, duration, sfx):
         self.id = id
         self.name = name
@@ -15,29 +16,45 @@ class Event:
         self.days = days
         self.duration = duration
         self.sfx = sfx
-def RandomizeEvent():
+def RandomizeFlightEvent():
     query = 'SELECT event_name, chance_max FROM random_events'
     cursor.execute(query)
     events = cursor.fetchall()
-    Event.Events = {name: chancesmax for name, chancesmax in events}
-    eventName = random.choice(list(Event.Events.keys()))
-    chance = random.randint(1, Event.Events[eventName])
-    if chance == Event.Events[eventName]:
+    FlightEvent.Events = {name: chancesmax for name, chancesmax in events}
+    eventName = random.choice(list(FlightEvent.Events.keys()))
+    chance = random.randint(1, FlightEvent.Events[eventName])
+    if chance == FlightEvent.Events[eventName]:
         query = f'select * from random_events where event_name = "{eventName}"'
     else:
         query = 'select * from random_events where event_name = "Normal Day"'
     cursor.execute(query)
     row = cursor.fetchone()
-    print(row)
-    ActiveEvent = Event(*row)
-    return ActiveEvent
-
-event = RandomizeEvent()
-print(event)
-print(f"name {event.name}")
-print(f"dmg {event.dmg}")
-print(f"days {event.days}")
+    FlightEvent.currentFlightEvent = FlightEvent(*row)
+    return FlightEvent.currentFlightEvent
 
 
+def EventChecker(flightORcountry):
+    if flightORcountry == "flight":
+        if FlightEvent.currentFlightEvent == None:
+            RandomizeFlightEvent()
+        else:
+            if FlightEvent.currentFlightEvent != None and FlightEvent.currentFlightEvent.duration > 0:
+                FlightEvent.currentFlightEvent.duration -= 1
+            if FlightEvent.currentFlightEvent.duration == 0:
+                RandomizeFlightEvent()
+            elif FlightEvent.currentFlightEvent == None or FlightEvent.currentFlightEvent.days < 0:
+                print("bruh2: bruh strikes back, RESULTING IN EVENT SYSTEM ERRORS!!!!!")
+                print(FlightEvent.currentFlightEvent.duration)
+                print(FlightEvent.currentFlightEvent)
+                FlightEvent.currentFlightEvent.duration = 0
 
+FlightEvents = []
+def InitEvents(days):
+    for day in range(days):
+        EventChecker("flight")
+        FlightEvents.append(FlightEvent.currentFlightEvent)
 
+InitEvents(666)
+while True:
+    DayEvent = int(input("todays day?: "))
+    print(FlightEvents[DayEvent - 1].name)

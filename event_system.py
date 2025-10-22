@@ -1,14 +1,10 @@
 import random
-
 from utils import get_connection
 conn = get_connection()
 cursor = conn.cursor()
 FlightEvents = []
-playerId = 666
-
 class FlightEvent:
     FlightEvents = {}
-
     currentFlightEvent = None
     def __init__(self, id, name, description, Cmax, Pmult, dmg, days, duration, sfx):
         self.id = id
@@ -35,8 +31,6 @@ def RandomizeFlightEvent():
     row = cursor.fetchone()
     FlightEvent.currentFlightEvent = FlightEvent(*row)
     return FlightEvent.currentFlightEvent
-
-
 def EventChecker(flightORcountry):
     if flightORcountry == "flight":
         if FlightEvent.currentFlightEvent == None:
@@ -51,8 +45,6 @@ def EventChecker(flightORcountry):
                 print(FlightEvent.currentFlightEvent.duration)
                 print(FlightEvent.currentFlightEvent)
                 FlightEvent.currentFlightEvent.duration = 0
-
-
 def InitEvents(seed):
     CurrentDay = seed * 1000
     query = f'select * from player_fate where day = "{CurrentDay + 1}"'
@@ -69,8 +61,6 @@ def InitEvents(seed):
             cursor.execute(query)
     else:
         print("already exists")
-
-
 def SelectEvent(seed, type, day):
     Date = seed * 1000 + day
     if type != None:
@@ -87,10 +77,6 @@ def SelectEvent(seed, type, day):
                     print(FlightEvent.currentFlightEvent)
                     print(FlightEvent.currentFlightEvent.name)
     return FlightEvent.currentFlightEvent
-
-
-
-
 while True:
     DayEvent = int(input("todays day?: "))
     Seed = int(input("seed?: "))

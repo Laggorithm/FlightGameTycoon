@@ -3,8 +3,12 @@ import random
 from utils import get_connection
 conn = get_connection()
 cursor = conn.cursor()
+FlightEvents = []
+playerId = 666
+
 class FlightEvent:
     FlightEvents = {}
+
     currentFlightEvent = None
     def __init__(self, id, name, description, Cmax, Pmult, dmg, days, duration, sfx):
         self.id = id
@@ -48,13 +52,48 @@ def EventChecker(flightORcountry):
                 print(FlightEvent.currentFlightEvent)
                 FlightEvent.currentFlightEvent.duration = 0
 
-FlightEvents = []
-def InitEvents(days):
-    for day in range(days):
-        EventChecker("flight")
-        FlightEvents.append(FlightEvent.currentFlightEvent)
 
-InitEvents(666)
+def InitEvents(seed):
+    CurrentDay = seed * 1000
+    query = f'select * from player_fate where day = "{CurrentDay + 1}"'
+    cursor.execute(query)
+    row = cursor.fetchall()
+    thisDay = CurrentDay
+    if not row:
+        for day in range(666):
+            EventChecker("flight")
+            FlightEvents.append(FlightEvent.currentFlightEvent)
+        for event in FlightEvents:
+            thisDay += 1
+            query = f"""INSERT INTO player_fate (day, event_name) VALUES ({thisDay}, '{event.name}')"""
+            cursor.execute(query)
+    else:
+        print("already exists")
+
+
+def SelectEvent(seed, type, day):
+    Date = seed * 1000 + day
+    if type != None:
+        if type == "flight":
+            query = f'select event_name from player_fate where day = "{Date}"'
+            cursor.execute(query)
+            rows = cursor.fetchall()
+            for row in rows:
+                if row:
+                    query = f'select * from random_events where event_name = "{row[0]}"'
+                    cursor.execute(query)
+                    row = cursor.fetchone()
+                    FlightEvent.currentFlightEvent = FlightEvent(*row)
+                    print(FlightEvent.currentFlightEvent)
+                    print(FlightEvent.currentFlightEvent.name)
+    return FlightEvent.currentFlightEvent
+
+
+
+
 while True:
     DayEvent = int(input("todays day?: "))
-    print(FlightEvents[DayEvent - 1].name)
+    Seed = int(input("seed?: "))
+    InitEvents(Seed)
+    SelectEvent(Seed, "flight", DayEvent)
+

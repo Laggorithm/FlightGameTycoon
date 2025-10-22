@@ -186,6 +186,14 @@ CREATE TABLE base_upgrades (
   INDEX idx_base_upgrades_base_day (base_id, installed_day),
   INDEX idx_base_upgrades_code (upgrade_code)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+-- --------------------------------------------------------
+-- Random events (esimerkkidata)
+-- --------------------------------------------------------
+CREATE TABLE player_fate (
+  seed INT,
+  day INT ,
+  event_name VARCHAR(100) NOT NULL
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 -- --------------------------------------------------------
 -- 10. market_aircraft (Käytettyjen koneiden kauppapaikka)

@@ -25,8 +25,6 @@ def _icon_title(title: str) -> None:
 def list_recent_saves(limit: int = 20):
     """
     Listaa viimeisimmät tallennukset – nopea katsaus latausvalikkoon.
-    - Käytän dictionary-kurssoria jos mahdollista.
-    - Tulosteeseen lisätty ikonit, jotta valikko näyttää kivalta.
     """
     yhteys = get_connection()
     try:

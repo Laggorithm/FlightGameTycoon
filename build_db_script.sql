@@ -168,7 +168,9 @@ CREATE TABLE aircraft_upgrades (
   upgrade_code VARCHAR(40),
   level INT,
   installed_day INT,
-  FOREIGN KEY (aircraft_id) REFERENCES aircraft(aircraft_id)
+  FOREIGN KEY (aircraft_id) REFERENCES aircraft(aircraft_id),
+  INDEX idx_air_upg_air_code (aircraft_id, upgrade_code),
+  INDEX idx_air_upg_day (installed_day)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 -- --------------------------------------------------------
@@ -194,7 +196,22 @@ CREATE TABLE player_fate (
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 -- --------------------------------------------------------
--- Random events (esimerkkidata)
+-- 10. market_aircraft (Käytettyjen koneiden kauppapaikka)
+-- --------------------------------------------------------
+CREATE TABLE market_aircraft (
+  market_id INT AUTO_INCREMENT PRIMARY KEY,
+  model_code VARCHAR(40) NOT NULL,
+  purchase_price DECIMAL(15,2) NOT NULL,
+  condition_percent INT NOT NULL,
+  hours_flown INT NOT NULL,
+  manufactured_day INT NOT NULL,
+  market_notes TEXT NULL,
+  listed_day INT NOT NULL,
+  FOREIGN KEY (model_code) REFERENCES aircraft_models(model_code)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+-- --------------------------------------------------------
+-- Random events
 -- --------------------------------------------------------
 INSERT INTO random_events (
   event_name,
@@ -219,186 +236,48 @@ INSERT INTO random_events (
 ('Normal Day', NULL, 1, 1.0, 0, 1.0, 1, NULL);
 
 -- --------------------------------------------------------
--- Starter Aircraft (ei listata kaupassa; vain uuden pelin lahja)
+-- Lentokonemallit - Vähän koitettu balansoida
 -- --------------------------------------------------------
+
 INSERT INTO aircraft_models (
   model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
   range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
   co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('DC3FREE', 'Douglas', 'DC-3 Starter', 0, 2000,
- 800, 150, 'STARTER', 1000, 0.40,
- 0.20, 'E', -0.05);
+) VALUES
+-- Starter Aircraft
+('DC3FREE', 'Douglas', 'DC-3 Starter', 0, 2000, 800, 150, 'STARTER', 1000, 0.40, 0.20, 'E', 0.85),
 
--- --------------------------------------------------------
 -- Small Aircraft
--- --------------------------------------------------------
-INSERT INTO aircraft_models (
-  model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
-  range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
-  co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('C172', 'Cessna', '172 Skyhawk', 300000, 300,
- 1285, 122, 'SMALL', 5000, 0.65,
- 0.12, 'D', -0.10),
+('C172', 'Cessna', '172 Skyhawk', 120000, 300, 1285, 122, 'SMALL', 3000, 0.65, 0.12, 'D', 0.90),
+('PC6', 'Pilatus', 'PC-6 Porter', 400000, 900, 1200, 125, 'SMALL', 6000, 0.66, 0.14, 'C', 0.92),
+('BE58', 'Beechcraft', 'Baron 58', 550000, 600, 1480, 200, 'SMALL', 7000, 0.68, 0.15, 'C', 0.88),
+('BN2', 'Britten-Norman', 'BN-2 Islander', 600000, 1000, 1400, 140, 'SMALL', 8000, 0.67, 0.16, 'C', 0.87),
+('KODI', 'Daher', 'Kodiak 100', 900000, 1400, 1900, 183, 'SMALL', 12000, 0.70, 0.16, 'C', 0.86),
+('C208B', 'Cessna', '208B Grand Caravan EX', 1100000, 1400, 1850, 186, 'SMALL', 11000, 0.71, 0.17, 'C', 0.86),
+('PC12', 'Pilatus', 'PC-12 NGX', 1800000, 1000, 3340, 280, 'SMALL', 20000, 0.72, 0.18, 'C', 0.85),
 
-('PC12', 'Pilatus', 'PC-12 NGX', 4900000, 1000,
- 3340, 280, 'SMALL', 20000, 0.72,
- 0.18, 'C', -0.15),
-
-('BE58', 'Beechcraft', 'Baron 58', 1200000, 600,
- 1480, 200, 'SMALL', 8000, 0.68,
- 0.15, 'C', -0.12),
-
-('KODI', 'Daher', 'Kodiak 100', 2200000, 1400,
- 1900, 183, 'SMALL', 12000, 0.70,
- 0.16, 'C', -0.14);
-
--- Lisättyjä SMALL-malleja
-INSERT INTO aircraft_models (
-  model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
-  range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
-  co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('C208B', 'Cessna', '208B Grand Caravan EX', 2300000, 1400,
- 1850, 186, 'SMALL', 11000, 0.71,
- 0.17, 'C', -0.14),
-
-('PC6', 'Pilatus', 'PC-6 Porter', 1000000, 900,
- 1200, 125, 'SMALL', 7000, 0.66,
- 0.14, 'C', -0.12),
-
-('BN2', 'Britten-Norman', 'BN-2 Islander', 1200000, 1000,
- 1400, 140, 'SMALL', 9000, 0.67,
- 0.16, 'C', -0.13);
-
--- --------------------------------------------------------
 -- Medium Aircraft
--- --------------------------------------------------------
-INSERT INTO aircraft_models (
-  model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
-  range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
-  co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('AT72F', 'ATR', '72-600F', 26000000, 8900,
- 1528, 275, 'MEDIUM', 80000, 0.78,
- 0.35, 'B', -0.30),
+('AT42F', 'ATR', '42-500F', 3500000, 5400, 1550, 250, 'MEDIUM', 30000, 0.80, 0.32, 'B', 0.80),
+('DC9F', 'McDonnell Douglas', 'DC-9F', 4200000, 18000, 2000, 400, 'MEDIUM', 45000, 0.73, 0.45, 'C', 0.78),
+('AT72F', 'ATR', '72-600F', 5000000, 8900, 1528, 275, 'MEDIUM', 40000, 0.78, 0.35, 'B', 0.75),
+('E190F', 'Embraer', 'E190 Freighter', 5500000, 13500, 3300, 450, 'MEDIUM', 50000, 0.75, 0.40, 'B', 0.76),
+('DH8Q4F', 'De Havilland', 'Dash 8 Q400PF', 6000000, 9000, 2000, 360, 'MEDIUM', 42000, 0.77, 0.36, 'B', 0.75),
+('B733F', 'Boeing', '737-300F', 7500000, 18700, 2950, 420, 'MEDIUM', 60000, 0.74, 0.55, 'C', 0.70),
+('A321F', 'Airbus', 'A321-200P2F', 9000000, 27000, 3700, 450, 'MEDIUM', 70000, 0.76, 0.52, 'C', 0.72),
+('B752F', 'Boeing', '757-200F', 11000000, 32000, 5800, 450, 'MEDIUM', 80000, 0.72, 0.60, 'D', 0.68),
 
-('B733F', 'Boeing', '737-300F', 35000000, 18700,
- 2950, 420, 'MEDIUM', 120000, 0.74,
- 0.55, 'C', -0.35),
-
-('DC9F', 'McDonnell Douglas', 'DC-9F', 24000000, 18000,
- 2000, 400, 'MEDIUM', 95000, 0.73,
- 0.45, 'C', -0.28),
-
-('E190F', 'Embraer', 'E190 Freighter', 27000000, 13500,
- 3300, 450, 'MEDIUM', 100000, 0.75,
- 0.40, 'B', -0.25);
-
--- Lisättyjä MEDIUM-malleja
-INSERT INTO aircraft_models (
-  model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
-  range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
-  co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('AT42F', 'ATR', '42-500F', 20000000, 5400,
- 1550, 250, 'MEDIUM', 60000, 0.80,
- 0.32, 'B', -0.28),
-
-('DH8Q4F', 'De Havilland', 'Dash 8 Q400PF', 27000000, 9000,
- 2000, 360, 'MEDIUM', 85000, 0.77,
- 0.36, 'B', -0.30),
-
-('A321F', 'Airbus', 'A321-200P2F', 48000000, 27000,
- 3700, 450, 'MEDIUM', 140000, 0.76,
- 0.52, 'C', -0.32),
-
-('B752F', 'Boeing', '757-200F', 55000000, 32000,
- 5800, 450, 'MEDIUM', 160000, 0.72,
- 0.60, 'D', -0.34);
-
--- --------------------------------------------------------
 -- Large Aircraft
--- --------------------------------------------------------
-INSERT INTO aircraft_models (
-  model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
-  range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
-  co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('B744F', 'Boeing', '747-400F', 125000000, 113000,
- 8230, 490, 'LARGE', 500000, 0.70,
- 1.20, 'E', -0.60),
+('A306F', 'Airbus', 'A300-600F', 15000000, 48000, 4400, 460, 'LARGE', 125000, 0.69, 0.95, 'D', 0.65),
+('DC10F', 'McDonnell Douglas', 'DC-10F', 18000000, 66000, 6100, 480, 'LARGE', 150000, 0.68, 1.10, 'E', 0.60),
+('MD11F', 'McDonnell Douglas', 'MD-11F', 22000000, 91000, 6750, 485, 'LARGE', 175000, 0.72, 1.00, 'D', 0.62),
+('B763F', 'Boeing', '767-300F', 25000000, 58000, 6000, 470, 'LARGE', 150000, 0.74, 0.98, 'D', 0.64),
+('A332F', 'Airbus', 'A330-200F', 28000000, 70000, 7400, 470, 'LARGE', 200000, 0.76, 1.00, 'D', 0.65),
+('B744F', 'Boeing', '747-400F', 35000000, 113000, 8230, 490, 'LARGE', 250000, 0.70, 1.20, 'E', 0.55),
+('B77LF', 'Boeing', '777F', 40000000, 102000, 9070, 490, 'LARGE', 260000, 0.75, 1.15, 'D', 0.58),
 
-('A332F', 'Airbus', 'A330-200F', 110000000, 70000,
- 7400, 470, 'LARGE', 400000, 0.76,
- 1.00, 'D', -0.50),
-
-('DC10F', 'McDonnell Douglas', 'DC-10F', 80000000, 66000,
- 6100, 480, 'LARGE', 300000, 0.68,
- 1.10, 'E', -0.55),
-
-('MD11F', 'McDonnell Douglas', 'MD-11F', 90000000, 91000,
- 6750, 485, 'LARGE', 350000, 0.72,
- 1.00, 'D', -0.52);
-
--- Lisättyjä LARGE-malleja
-INSERT INTO aircraft_models (
-  model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
-  range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
-  co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('A306F', 'Airbus', 'A300-600F', 65000000, 48000,
- 4400, 460, 'LARGE', 250000, 0.69,
- 0.95, 'D', -0.45),
-
-('B763F', 'Boeing', '767-300F', 95000000, 58000,
- 6000, 470, 'LARGE', 300000, 0.74,
- 0.98, 'D', -0.48),
-
-('B77LF', 'Boeing', '777F', 150000000, 102000,
- 9070, 490, 'LARGE', 520000, 0.75,
- 1.15, 'D', -0.58);
-
--- --------------------------------------------------------
 -- Huge Aircraft
--- --------------------------------------------------------
-INSERT INTO aircraft_models (
-  model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
-  range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
-  co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('AN225', 'Antonov', 'An-225 Mriya', 250000000, 250000,
- 15400, 460, 'HUGE', 1000000, 0.60,
- 2.50, 'F', -1.00),
-
-('A388F', 'Airbus', 'A380-800F (concept)', 230000000, 150000,
- 15200, 490, 'HUGE', 850000, 0.65,
- 2.00, 'F', -0.90),
-
-('C5GALX', 'Lockheed', 'C-5 Galaxy', 210000000, 127000,
- 12200, 465, 'HUGE', 900000, 0.62,
- 2.20, 'F', -0.95);
-
--- Lisättyjä HUGE-malleja
-INSERT INTO aircraft_models (
-  model_code, manufacturer, model_name, purchase_price, base_cargo_kg,
-  range_km, cruise_speed_kts, category, upkeep_price, efficiency_score,
-  co2_kg_per_km, eco_class, eco_fee_multiplier
-)
-VALUES
-('AN124', 'Antonov', 'An-124 Ruslan', 180000000, 120000,
- 4800, 430, 'HUGE', 800000, 0.61,
- 2.20, 'F', -0.92),
-
-('B748F', 'Boeing', '747-8F', 170000000, 137000,
- 8130, 493, 'HUGE', 600000, 0.74,
- 1.25, 'D', -0.62);
+('B748F', 'Boeing', '747-8F', 50000000, 137000, 8130, 493, 'HUGE', 300000, 0.74, 1.25, 'D', 0.62),
+('AN124', 'Antonov', 'An-124 Ruslan', 60000000, 120000, 4800, 430, 'HUGE', 400000, 0.61, 2.20, 'F', 0.55),
+('C5GALX', 'Lockheed', 'C-5 Galaxy', 75000000, 127000, 12200, 465, 'HUGE', 450000, 0.62, 2.20, 'F', 0.52),
+('A388F', 'Airbus', 'A380-800F (concept)', 90000000, 150000, 15200, 490, 'HUGE', 425000, 0.65, 2.00, 'F', 0.58),
+('AN225', 'Antonov', 'An-225 Mriya', 120000000, 250000, 15400, 460, 'HUGE', 500000, 0.60, 2.50, 'F', 0.50);

@@ -8,7 +8,7 @@
 from typing import Optional
 from datetime import datetime
 import sys
-
+import random
 from game_session import GameSession
 from utils import get_connection
 
@@ -109,20 +109,24 @@ def start_new_game():
     print("   • Sama siemen tuottaa AINA samat tapahtumat")
     print("   • Hyödyllinen testaukseen ja kilpailuihin\n")
 
+
     rng_in = input("Syötä siemen (tyhjä = satunnainen): ").strip()
 
-    # Jos käyttäjä syötti numeron, käytä sitä. Muuten None = satunnainen.
+    # Jos käyttäjä syötti numeron, käytä sitä. Muuten generoi satunnainen.
     if rng_in:
         try:
             rng_seed = int(rng_in)
             print(f"✅ Siemen {rng_seed} asetettu - Peli on nyt deterministinen!")
         except ValueError:
-            print("⚠️  Virheellinen siemen, käytetään satunnaista peliä.")
-            rng_seed = None
+            print("⚠️ Virheellinen siemen, generoidaan satunnainen...")
+            # Generate a random seed (e.g., between 1 and a large number)
+            rng_seed = random.randint(1, 2**32 - 1)
+            print(f"✅ Satunnainen siemen {rng_seed} generoitu.")
     else:
-        rng_seed = None
-        print("✅ Satunnainen peli valittu")
-#
+        # Generate a random seed if input is empty
+        rng_seed = random.randint(1, 2**32 - 1)
+        print(f"✅ Satunnainen siemen {rng_seed} generoitu.")
+
     try:
         gs = GameSession.new_game(
             name=name,

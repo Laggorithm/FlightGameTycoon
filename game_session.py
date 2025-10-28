@@ -1898,148 +1898,168 @@ class GameSession:
 
     def advance_to_next_day(self, silent: bool = False) -> dict:
         """
-                Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
-                Tarkistaa myös, onko joutilaita koneita väärillä kentillä ja lähettää ne kotiin.
-                """
-        # --- UUSI OSA: LÄHETÄ KONEET KOTIIN ---------------------------------
+        Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
+        Tarkistaa myös, onko joutilaita koneita väärillä kentillä ja lähettää ne kotiin.
+        """
+        # --- LÄHETÄ KONEET KOTIIN (RTB) ---------------------------------
         # Ajetaan tämä vain joka 3. päivä suorituskyvyn säästämiseksi pikakelauksessa
         if self.current_day % 3 == 0:
             self._initiate_return_flights_for_idle_aircraft(silent=silent)
 
         new_day = self.current_day + 1
         arrivals_count = 0
-        total_delta = Decimal("0.00")
-
-        # UTC-naive aikaleima tietokantaan
+        total_delta = Decimal("0.00") # Sopimuksista ansaittu raha
         db_timestamp = datetime.utcnow()
 
         yhteys = get_connection()
         try:
-            try:
-                kursori = yhteys.cursor(dictionary=True)
-            except TypeError:
-                kursori = yhteys.cursor()
-
+            # Käytetään dictionary=True, jotta sarakkeisiin voi viitata nimillä
+            kursori = yhteys.cursor(dictionary=True)
             try:
                 yhteys.start_transaction()
 
-                # Päivän vaihto + updated_at
+                # Päivitä pelin päivä tietokantaan
                 kursori.execute(
                     "UPDATE game_saves SET current_day = %s, updated_at = %s WHERE save_id = %s",
                     (new_day, db_timestamp, self.save_id),
                 )
 
-                # Haetaan tähän päivään mennessä saapuvat lennot
+                # Hae SAAPUVAT lennot (sekä sopimuslennot että paluulennot)
                 kursori.execute(
                     """
-                    SELECT f.flight_id,
-                           f.contract_id,
-                           f.aircraft_id,
-                           f.arr_ident,
-                           f.arrival_day,
-                           f.dep_day,
-                           c.deadline_day,
-                           c.reward,
-                           c.penalty
+                    SELECT f.flight_id, f.contract_id, f.aircraft_id,
+                        f.arr_ident, f.arrival_day, f.dep_day, f.status AS flight_status,
+                        c.deadline_day, c.reward, c.penalty
                     FROM flights f
-                             JOIN contracts c ON c.contractId = f.contract_id
+                    -- LEFT JOIN, jotta paluulennot (ei sopimusta) tulevat mukaan
+                    LEFT JOIN contracts c ON c.contractId = f.contract_id
                     WHERE f.save_id = %s
-                      AND f.status = 'ENROUTE'
-                      AND f.arrival_day <= %s
+                    -- KÄSITTELE SEKÄ ENROUTE ETTÄ ENROUTE_RTB TILAT --
+                    AND f.status IN ('ENROUTE', 'ENROUTE_RTB')
+                    AND f.arrival_day <= %s
                     """,
                     (self.save_id, new_day),
                 )
                 arrivals = kursori.fetchall() or []
                 arrivals_count = len(arrivals)
 
-                for rd in arrivals:
-                    # Salli sekä dict- että tuple-rivit
-                    dep_day = int(rd["dep_day"] if isinstance(rd, dict) else rd[5])
-                    arr_day = int(rd["arrival_day"] if isinstance(rd, dict) else rd[4])
-                    flight_id = rd["flight_id"] if isinstance(rd, dict) else rd[0]
-                    contract_id = rd["contract_id"] if isinstance(rd, dict) else rd[1]
-                    aircraft_id = rd["aircraft_id"] if isinstance(rd, dict) else rd[2]
-                    arr_ident = rd["arr_ident"] if isinstance(rd, dict) else rd[3]
-                    deadline = int(rd["deadline_day"] if isinstance(rd, dict) else rd[5])
-                    reward = _to_dec(rd["reward"] if isinstance(rd, dict) else rd[6])
-                    penalty = _to_dec(rd["penalty"] if isinstance(rd, dict) else rd[7])
+                for flight_data in arrivals:
+                    flight_id = flight_data["flight_id"]
+                    aircraft_id = flight_data["aircraft_id"]
+                    arr_ident = flight_data["arr_ident"]
+                    arr_day = int(flight_data["arrival_day"])
+                    dep_day = int(flight_data["dep_day"])
+                    current_flight_status = flight_data["flight_status"]
 
-                    # Lasketaan lennon kesto ja lisätään tunnit koneen tietoihin
+                    # --- Laske ja lisää lentotunnit ---
                     flight_duration_days = arr_day - dep_day
                     hours_to_add = max(0, flight_duration_days) * 24
-
                     if hours_to_add > 0:
                         kursori.execute(
                             "UPDATE aircraft SET hours_flown = hours_flown + %s WHERE aircraft_id = %s",
                             (hours_to_add, aircraft_id),
                         )
-                    # Lennon tila saapuneeksi
-                    kursori.execute("UPDATE flights SET status = 'ARRIVED' WHERE flight_id = %s", (flight_id,))
 
-                    # Kone vapautuu ja siirtyy määräkentälle
+                    # --- Päivitä lennon tila ---
+                    # Käytä erillistä tilaa saapuneille paluulennoille, jos tarpeen
+                    new_flight_status = 'ARRIVED_RTB' if current_flight_status == 'ENROUTE_RTB' else 'ARRIVED'
+                    kursori.execute("UPDATE flights SET status = %s WHERE flight_id = %s", (new_flight_status, flight_id,))
+
+                    # --- Päivitä lentokoneen tila ja sijainti ---
+                    # Koneesta tulee IDLE saapumiskentälle
                     kursori.execute(
                         "UPDATE aircraft SET status = 'IDLE', current_airport_ident = %s WHERE aircraft_id = %s",
                         (arr_ident, aircraft_id),
                     )
 
-                    # Sopimuksen lopputulos (myöhästyminen vähentää palkkiota, mutta ei alle nollan)
-                    if new_day <= deadline:
-                        final_reward = reward
-                        new_status = "COMPLETED"
-                    else:
-                        final_reward = max(Decimal("0.00"), reward - penalty)
-                        new_status = "COMPLETED_LATE"
+                    # --- Käsittele sopimus (Vain jos kyseessä sopimuslento, EI RTB) ---
+                    contract_id = flight_data["contract_id"]
+                    # Tarkista, ettei contract_id ole NULL ja että status oli 'ENROUTE'
+                    if contract_id is not None and current_flight_status == 'ENROUTE':
+                        deadline = int(flight_data["deadline_day"])
+                        reward = _to_dec(flight_data["reward"])
+                        penalty = _to_dec(flight_data["penalty"])
 
-                    kursori.execute(
-                        "UPDATE contracts SET status = %s, completed_day = %s WHERE contractId = %s",
-                        (new_status, new_day, contract_id),
-                    )
+                        # Määritä sopimuksen lopputulos ja palkkio
+                        if new_day <= deadline:
+                            final_reward = reward
+                            new_contract_status = "COMPLETED"
+                        else:
+                            final_reward = max(Decimal("0.00"), reward - penalty)
+                            new_contract_status = "COMPLETED_LATE"
 
-                    total_delta += final_reward
+                        # Päivitä sopimuksen tila
+                        kursori.execute(
+                            "UPDATE contracts SET status = %s, completed_day = %s WHERE contractId = %s",
+                            (new_contract_status, new_day, contract_id),
+                        )
+                        # Lisää ansaittu raha vain sopimuslennoista
+                        total_delta += final_reward
 
-                # Hyvitä ansiot kassaan kerralla
+                # --- Päivitä kassa (jos sopimuksia valmistui) ---
                 if total_delta != Decimal("0.00"):
+                    # Lukitse pelaajan tallennus päivitystä varten
                     kursori.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
-                    row = kursori.fetchone()
-                    cur_cash = _to_dec(row["cash"] if isinstance(row, dict) else row[0])
+                    cur_cash = _to_dec(kursori.fetchone()["cash"])
                     new_cash = (cur_cash + total_delta).quantize(Decimal("0.01"))
+                    # Päivitä kassa tietokantaan
                     kursori.execute("UPDATE game_saves SET cash = %s WHERE save_id = %s", (new_cash, self.save_id))
+                    # Päivitä kassa myös sessio-olioon heti
                     self.cash = new_cash
 
+                # Hyväksy kaikki muutokset tietokantaan
                 yhteys.commit()
+                # Päivitä päivä sessio-olioon vasta onnistuneen commitin jälkeen
                 self.current_day = new_day
 
             except Exception as e:
+                # Peru muutokset, jos jokin meni pieleen
                 yhteys.rollback()
                 if not silent:
                     print(f"❌ Seuraava päivä -käsittely epäonnistui: {e}")
+                # Varmista, että päivä ei päivity, jos transaktio epäonnistuu
+                self._refresh_save_state() # Lataa tila uudelleen tietokannasta
                 return {"arrivals": 0, "earned": Decimal("0.00")}
-        finally:
-            try:
-                kursori.close()
-            except Exception:
-                pass
-            try:
-                yhteys.close()
-            except Exception:
-                pass
+            finally:
+                # Sulje kursori ja yhteys siististi
+                try:
+                    kursori.close()
+                except Exception:
+                    pass
+                try:
+                    yhteys.close()
+                except Exception:
+                    pass
 
-        # Kuukausilaskut joka 30. päivä (vain aktiiviselle yritykselle)
-        if self.current_day % 30 == 0 and self.status == "ACTIVE":
-            self._process_monthly_bills(silent=silent)
+            # --- Käsittele kuukausilaskut ---
+            # Tarkista, onko laskutuspäivä (joka 30. päivä) ja onko peli aktiivinen
+            if self.current_day % 30 == 0 and self.status == "ACTIVE":
+                self._process_monthly_bills(silent=silent)
 
-        # Tulosteet vain ei-hiljaisessa tilassa
-        if not silent:
-            gained_str = f", ansaittu {self._fmt_money(total_delta)}" if arrivals_count > 0 else ""
-            print(f"⏭️  Päivä siirtyi: {self.current_day}{gained_str}.")
-            input("\n↩︎ Enter jatkaaksesi...")
+            # --- Tulosta yhteenveto käyttäjälle (jos ei hiljainen tila) ---
+            if not silent:
+                # Näytä ansaittu raha vain, jos sitä tuli
+                gained_str = f", ansaittu {self._fmt_money(total_delta)}" if total_delta > 0 else ""
+                print(f"⏭️ Päivä siirtyi: {self.current_day}. Saapuneita lentoja: {arrivals_count}{gained_str}.")
+                # Voit poistaa tämän input()-kutsun, jos haluat nopeamman etenemisen
+                input("\n↩︎ Enter jatkaaksesi...")
 
+            # --- Tarkista pelin päättymisehdot (tulostetaan main_menu-loopissa) ---
             if self.status == "BANKRUPT":
-                print("💀 Yritys meni konkurssiin.")
-            if self.current_day >= SURVIVAL_TARGET_DAYS and self.status == "ACTIVE":
-                print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää.")
+                # Konkurssiviesti tulostetaan main_menu:ssa
+                pass
+            elif self.current_day >= SURVIVAL_TARGET_DAYS and self.status == "ACTIVE":
+                # Voittoviesti tulostetaan main_menu:ssa tai pikakelauksen yhteydessä
+                # Status päivitetään VICTORYksi tarvittaessa siellä
+                pass
 
-        return {"arrivals": arrivals_count, "earned": total_delta}
+            # Palauta yhteenveto saapumisista ja ansioista
+            return {"arrivals": arrivals_count, "earned": total_delta}
+        # Virheenkäsittely yhteyden tasolla
+        except Exception as e:
+            if not silent:
+                print(f"❌ Seuraava päivä -käsittely epäonnistui: {e}")
+            return {"arrivals": 0, "earned": Decimal("0.00")}
 
     # ------------ VEROTTAJA TULEE, KUU VAIHTUU --------------
 

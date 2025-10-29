@@ -190,8 +190,8 @@ CREATE TABLE base_upgrades (
 -- Random events (esimerkkidata)
 -- --------------------------------------------------------
 CREATE TABLE player_fate (
-  seed INT,
-  day INT ,
+  seed BIGINT,
+  day INT,
   event_name VARCHAR(100) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 

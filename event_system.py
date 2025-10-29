@@ -1,11 +1,11 @@
 
 import random
 from utils import get_connection
+
 conn = get_connection()
 cursor = conn.cursor()
 FlightEvents = []
 BorderEvents = []
-playerName = "Test"
 #Object of flight event that will be containing all data and multipliers
 class FlightEvent:
     FlightEvents = {}
@@ -36,9 +36,7 @@ def GetUserSeed(nickname):
     cursor.execute(query)
     row = cursor.fetchone()
     seed = row[0]
-    print(seed)
     return seed
-seed = GetUserSeed(playerName)
 #Name speaks for itself, doesn't it?
 #Chooses and randomizes event for certain day, used in InitEvents
 #Randomizes based on data from random_events that is being saved in dictionary FlightEvent.Events{Name of event: max chance of occurence}
@@ -74,12 +72,12 @@ def EventChecker(flightORcountry):
                 print(FlightEvent.currentFlightEvent.duration)
                 print(FlightEvent.currentFlightEvent)
                 FlightEvent.currentFlightEvent.duration = 0
+
 #Must be called ONLY and RIGHT AFTER generation of seed
 #Code creates pre-randomized list of events for player.
 #Dates are calculated via seed * 1000, then adding + 1 for each of 666 days.
 #Example of date: seed -- 123. Date needed is 13th day. Wil look like this: 123013 where 123 -- seed x1000 and 001-666 are days
-def InitEvents():
-    seed = GetUserSeed(playerName)
+def InitEvents(seed):
     CurrentDay = seed * 1000
     query = f'select * from player_fate where day = "{CurrentDay + 1}"'
     cursor.execute(query)
@@ -93,13 +91,10 @@ def InitEvents():
             thisDay += 1
             query = f"""INSERT INTO player_fate (day, event_name) VALUES ({thisDay}, '{event.name}')"""
             cursor.execute(query)
-    else:
-        print("already exists")
 
 #Used to select event for certain day, can be called during start of every flight.
 #Code returns object with the needed multipliers that should be added then to the calculations in the main code
-def SelectEvent(type, day):
-    seed = GetUserSeed(playerName)
+def SelectEvent(type, day, seed):
     Date = seed * 1000 + day
     if type != None:
         if type == "flight":
@@ -116,8 +111,3 @@ def SelectEvent(type, day):
     return FlightEvent.currentFlightEvent
 
 #Test program, unnecessary for work of the events
-while True:
-    DayEvent = int(input("todays day?: "))
-    InitEvents()
-    SelectEvent("flight", DayEvent)
-

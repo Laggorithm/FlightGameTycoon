@@ -69,17 +69,23 @@ from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime
 from utils import get_connection
 from airplane import init_airplanes, upgrade_airplane as db_upgrade_airplane
+from session_helpers import (
+    _to_dec,
+    _icon_title,
+    fetch_player_aircrafts_with_model_info,
+    get_current_aircraft_upgrade_state,
+    compute_effective_eco_multiplier,
+    calc_aircraft_upgrade_cost,
+    apply_aircraft_upgrade,
+    get_effective_eco_for_aircraft,
+    fetch_owned_bases,
+    fetch_base_current_level_map,
+    insert_base_upgrade,
+)
 
 # Konfiguraatiot yhdessä paikassa
 from upgrade_config import (
     UPGRADE_CODE,
-    DEFAULT_ECO_FACTOR_PER_LEVEL,
-    DEFAULT_ECO_FLOOR,
-    STARTER_BASE_COST,
-    STARTER_GROWTH,
-    NON_STARTER_BASE_PCT,
-    NON_STARTER_MIN_BASE,
-    NON_STARTER_GROWTH,
     HQ_MONTHLY_FEE,
     MAINT_PER_AIRCRAFT,
     BILL_GROWTH_RATE,
@@ -90,251 +96,6 @@ from upgrade_config import (
 
 # Decimal-laskennan tarkkuus – rahalaskennassa on hyvä varata skaalaa
 getcontext().prec = 28
-
-
-# ---------- Yleiset apurit (moduulitaso) ----------
-
-def _to_dec(x):
-    """
-    Turvallinen muunnos Decimal-muotoon.
-    - None -> Decimal('0')
-    - Muut numeeriset arvot muutetaan str():n kautta tarkkuuden säilyttämiseksi.
-    """
-    return x if isinstance(x, Decimal) else Decimal(str(x if x is not None else 0))
-
-
-def _icon_title(title: str) -> None:
-    """
-    Pieni visuaalinen apu valikko-otsikoille.
-    """
-    bar = "═" * (len(title) + 2)
-    print(f"\n╔{bar}╗")
-    print(f"║ {title} ║")
-    print(f"╚{bar}╝")
-
-
-# ---------- DB-hakufunktiot (moduulitaso) ----------
-
-def fetch_player_aircrafts_with_model_info(save_id: int) -> List[dict]:
-    """
-    Hae pelaajan (myymättömät) koneet yhdistettynä malleihin.
-    Palautus: list(dict), jossa mm.
-      - aircraft_id, registration, model_code
-      - model_name, category
-      - purchase_price_aircraft (todellinen ostohinta jos tallessa)
-      - purchase_price_model (mallin listahinta – fallback)
-      - eco_fee_multiplier (mallin perus-eco-kerroin)
-    """
-    sql = """
-        SELECT
-            a.aircraft_id,
-            a.registration,
-            a.model_code,
-            am.model_name,
-            am.category,
-            a.purchase_price  AS purchase_price_aircraft,
-            am.purchase_price AS purchase_price_model,
-            am.eco_fee_multiplier
-        FROM aircraft a
-        JOIN aircraft_models am ON am.model_code = a.model_code
-        WHERE a.save_id = %s
-          AND (a.sold_day IS NULL OR a.sold_day = 0)
-        ORDER BY a.aircraft_id
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor(dictionary=True)
-        kursori.execute(sql, (save_id,))
-        return kursori.fetchall() or []
-
-
-def get_current_aircraft_upgrade_state(aircraft_id: int, upgrade_code: str = UPGRADE_CODE) -> dict:
-    """
-    Palauttaa koneen tuoreimman päivitystason dict-muodossa.
-    - Hakee vain ja ainoastaan 'level'-sarakkeen, koska laskentalogiikka
-      on siirretty kokonaan Python-koodiin.
-    - Jos päivityksiä ei löydy, palauttaa tason 0.
-    """
-    # SQL-kysely on nyt yksinkertaistettu hakemaan vain tason.
-    sql = """
-        SELECT level
-        FROM aircraft_upgrades
-        WHERE aircraft_id = %s
-          AND upgrade_code = %s
-        ORDER BY aircraft_upgrade_id DESC
-        LIMIT 1
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor(dictionary=True)
-        kursori.execute(sql, (aircraft_id, upgrade_code))
-        r = kursori.fetchone()
-
-    # Jos tulosta ei löytynyt, kone on tasolla 0.
-    if not r:
-        return {"level": 0}
-
-    # Palautetaan sanakirja, jossa on vain nykyinen taso.
-    return {"level": int(r.get("level") or 0)}
-
-
-def compute_effective_eco_multiplier(aircraft_id: int, base_eco_multiplier: float) -> float:
-    """
-    Laskee koneen lopullisen, tehokkaan ECO-kertoimen päivitysten perusteella.
-    - Kerroin > 1.0 on hyvä (bonuspalkkio), kerroin < 1.0 on huono (vähennys palkkioon).
-    - Jokainen päivitys parantaa kerrointa 5 %.
-    """
-    # 1. Haetaan koneen nykyinen päivitystaso tietokannasta.
-    state = get_current_aircraft_upgrade_state(aircraft_id)
-    level = int(state["level"])
-
-    # 2. Määritellään päivityksen vaikutus. 1.05 = 5% parannus per taso.
-    # Koska kerroin on > 1, se KASVATTAA lopputulosta jokaisella tasolla.
-    factor_per_level = Decimal("1.05")
-
-    # 3. Lasketaan lopullinen kerroin "korkoa korolle" -periaatteella.
-    # Kaava: Lopullinen = Peruskerroin * (Päivityskerroin ^ Taso)
-    base_dec = Decimal(str(base_eco_multiplier))
-    effective_multiplier = base_dec * (factor_per_level ** level)
-
-    # 4. Varmistetaan, että kerroin pysyy turvallisissa rajoissa (esim. 0.50 - 5.00).
-    floor = Decimal("0.50")
-    cap = Decimal("5.00")
-    final_multiplier = max(floor, min(effective_multiplier, cap))
-
-    # 5. Palautetaan lopputulos float-muodossa pelin käyttöön.
-    return float(final_multiplier)
-
-
-def calc_aircraft_upgrade_cost(aircraft_row: dict, next_level: int) -> Decimal:
-    """
-    Laske seuraavan ECO-tason hinta annetulle koneelle.
-    - STARTER-kategoria: STARTER_BASE_COST * STARTER_GROWTH^(next_level-1)
-    - Muut: max(100k, 10 % ostohinnasta) * NON_STARTER_GROWTH^(next_level-1)
-      (ostohinta = a.purchase_price tai am.purchase_price fallback)
-    """
-    is_starter = (str(aircraft_row.get("category") or "").upper() == "STARTER")
-    if is_starter:
-        base = STARTER_BASE_COST
-        growth = STARTER_GROWTH
-    else:
-        purchase_price = aircraft_row.get("purchase_price_aircraft") or aircraft_row.get("purchase_price_model") or 0
-        base = max(NON_STARTER_MIN_BASE, (_to_dec(purchase_price) * NON_STARTER_BASE_PCT))
-        growth = NON_STARTER_GROWTH
-
-    # juuri tämän tason hinta (ei kumulatiivinen)
-    cost = (base * (growth ** (_to_dec(next_level) - _to_dec(1)))).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-    return cost
-
-def apply_aircraft_upgrade(aircraft_id: int, installed_day: int) -> int:
-    """
-    Kirjaa uuden ECO-päivityksen historiatauluun.
-    - Hakee vanhan tason ja kasvattaa sitä yhdellä.
-    - Tallentaa vain tason ja päivän, koska laskentalogiikka on keskitetty.
-    - Palauttaa uuden tason (new_level).
-    """
-    # 1. Haetaan nykyinen päivitystaso.
-    state = get_current_aircraft_upgrade_state(aircraft_id)
-    new_level = int(state["level"]) + 1
-
-    # 2. Lisätään uusi rivi historiatauluun.
-    # Uuden rivin luominen vanhan päivittämisen sijaan säilyttää täydellisen historian.
-    sql = """
-        INSERT INTO aircraft_upgrades
-            (aircraft_id, upgrade_code, level, installed_day)
-        VALUES
-            (%s, %s, %s, %s)
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor()
-        kursori.execute(sql, (
-            int(aircraft_id),
-            str(UPGRADE_CODE), # Käytetään globaalia vakiota "ECO"
-            int(new_level),
-            int(installed_day),
-        ))
-    return new_level
-
-
-def get_effective_eco_for_aircraft(aircraft_id: int) -> float:
-    """
-    Fetches the base eco multiplier for the aircraft model and applies upgrades.
-    Returns the effective eco multiplier as a float.
-    """
-    sql = """
-        SELECT am.eco_fee_multiplier
-        FROM aircraft a
-        JOIN aircraft_models am ON am.model_code = a.model_code
-        WHERE a.aircraft_id = %s
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor()
-        kursori.execute(sql, (aircraft_id,))
-        r = kursori.fetchone()
-
-    # Save the fetched value to base_eco, supporting tuple and dict results
-    if r is None:
-        base_eco = 1.0
-    elif isinstance(r, dict):
-        base_eco = r.get("eco_fee_multiplier", 1.0)
-    else:  # assume tuple
-        base_eco = r[0] if r[0] is not None else 1.0
-
-    return compute_effective_eco_multiplier(aircraft_id, base_eco)
-
-
-def fetch_owned_bases(save_id: int) -> List[dict]:
-    """
-    Palauttaa pelaajan omistamat tukikohdat: base_id, base_ident, base_name, purchase_cost.
-    """
-    sql = """
-        SELECT base_id, base_ident, base_name, purchase_cost
-        FROM owned_bases
-        WHERE save_id = %s
-        ORDER BY base_name
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor(dictionary=True)
-        kursori.execute(sql, (save_id,))
-        return kursori.fetchall() or []
-
-
-def fetch_base_current_level_map(base_ids: List[int]) -> Dict[int, str]:
-    """
-    Palauttaa { base_id: viimeisin upgrade_code } (SMALL/MEDIUM/LARGE/HUGE).
-    Jos tukikohdalla ei ole päivityksiä, sitä ei ole dictissä (oletetaan SMALL).
-    """
-    if not base_ids:
-        return {}
-
-    placeholders = ",".join(["%s"] * len(base_ids))
-    sql = f"""
-        SELECT bu.base_id, bu.upgrade_code
-        FROM base_upgrades bu
-        JOIN (
-            SELECT base_id, MAX(base_upgrade_id) AS maxid
-            FROM base_upgrades
-            WHERE base_id IN ({placeholders})
-            GROUP BY base_id
-        ) x ON x.base_id = bu.base_id AND x.maxid = bu.base_upgrade_id
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor(dictionary=True)
-        kursori.execute(sql, tuple(base_ids))
-        rivit = kursori.fetchall() or []
-    return {r["base_id"]: r["upgrade_code"] for r in rivit}
-
-
-def insert_base_upgrade(base_id: int, next_level_code: str, cost, day: int) -> None:
-    """
-    Lisää base_upgrades-historian rivin annetulle tukikohdalle.
-    """
-    sql = """
-        INSERT INTO base_upgrades (base_id, upgrade_code, installed_day, upgrade_cost)
-        VALUES (%s, %s, %s, %s)
-    """
-    with get_connection() as yhteys:
-        kursori = yhteys.cursor()
-        kursori.execute(sql, (int(base_id), str(next_level_code), int(day), float(_to_dec(cost))))
-
 
 # ---------- GameSession-luokka ----------
 
@@ -1898,148 +1659,168 @@ class GameSession:
 
     def advance_to_next_day(self, silent: bool = False) -> dict:
         """
-                Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
-                Tarkistaa myös, onko joutilaita koneita väärillä kentillä ja lähettää ne kotiin.
-                """
-        # --- UUSI OSA: LÄHETÄ KONEET KOTIIN ---------------------------------
+        Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
+        Tarkistaa myös, onko joutilaita koneita väärillä kentillä ja lähettää ne kotiin.
+        """
+        # --- LÄHETÄ KONEET KOTIIN (RTB) ---------------------------------
         # Ajetaan tämä vain joka 3. päivä suorituskyvyn säästämiseksi pikakelauksessa
         if self.current_day % 3 == 0:
             self._initiate_return_flights_for_idle_aircraft(silent=silent)
 
         new_day = self.current_day + 1
         arrivals_count = 0
-        total_delta = Decimal("0.00")
-
-        # UTC-naive aikaleima tietokantaan
+        total_delta = Decimal("0.00") # Sopimuksista ansaittu raha
         db_timestamp = datetime.utcnow()
 
         yhteys = get_connection()
         try:
-            try:
-                kursori = yhteys.cursor(dictionary=True)
-            except TypeError:
-                kursori = yhteys.cursor()
-
+            # Käytetään dictionary=True, jotta sarakkeisiin voi viitata nimillä
+            kursori = yhteys.cursor(dictionary=True)
             try:
                 yhteys.start_transaction()
 
-                # Päivän vaihto + updated_at
+                # Päivitä pelin päivä tietokantaan
                 kursori.execute(
                     "UPDATE game_saves SET current_day = %s, updated_at = %s WHERE save_id = %s",
                     (new_day, db_timestamp, self.save_id),
                 )
 
-                # Haetaan tähän päivään mennessä saapuvat lennot
+                # Hae SAAPUVAT lennot (sekä sopimuslennot että paluulennot)
                 kursori.execute(
                     """
-                    SELECT f.flight_id,
-                           f.contract_id,
-                           f.aircraft_id,
-                           f.arr_ident,
-                           f.arrival_day,
-                           f.dep_day,
-                           c.deadline_day,
-                           c.reward,
-                           c.penalty
+                    SELECT f.flight_id, f.contract_id, f.aircraft_id,
+                        f.arr_ident, f.arrival_day, f.dep_day, f.status AS flight_status,
+                        c.deadline_day, c.reward, c.penalty
                     FROM flights f
-                             JOIN contracts c ON c.contractId = f.contract_id
+                    -- LEFT JOIN, jotta paluulennot (ei sopimusta) tulevat mukaan
+                    LEFT JOIN contracts c ON c.contractId = f.contract_id
                     WHERE f.save_id = %s
-                      AND f.status = 'ENROUTE'
-                      AND f.arrival_day <= %s
+                    -- KÄSITTELE SEKÄ ENROUTE ETTÄ ENROUTE_RTB TILAT --
+                    AND f.status IN ('ENROUTE', 'ENROUTE_RTB')
+                    AND f.arrival_day <= %s
                     """,
                     (self.save_id, new_day),
                 )
                 arrivals = kursori.fetchall() or []
                 arrivals_count = len(arrivals)
 
-                for rd in arrivals:
-                    # Salli sekä dict- että tuple-rivit
-                    dep_day = int(rd["dep_day"] if isinstance(rd, dict) else rd[5])
-                    arr_day = int(rd["arrival_day"] if isinstance(rd, dict) else rd[4])
-                    flight_id = rd["flight_id"] if isinstance(rd, dict) else rd[0]
-                    contract_id = rd["contract_id"] if isinstance(rd, dict) else rd[1]
-                    aircraft_id = rd["aircraft_id"] if isinstance(rd, dict) else rd[2]
-                    arr_ident = rd["arr_ident"] if isinstance(rd, dict) else rd[3]
-                    deadline = int(rd["deadline_day"] if isinstance(rd, dict) else rd[5])
-                    reward = _to_dec(rd["reward"] if isinstance(rd, dict) else rd[6])
-                    penalty = _to_dec(rd["penalty"] if isinstance(rd, dict) else rd[7])
+                for flight_data in arrivals:
+                    flight_id = flight_data["flight_id"]
+                    aircraft_id = flight_data["aircraft_id"]
+                    arr_ident = flight_data["arr_ident"]
+                    arr_day = int(flight_data["arrival_day"])
+                    dep_day = int(flight_data["dep_day"])
+                    current_flight_status = flight_data["flight_status"]
 
-                    # Lasketaan lennon kesto ja lisätään tunnit koneen tietoihin
+                    # --- Laske ja lisää lentotunnit ---
                     flight_duration_days = arr_day - dep_day
                     hours_to_add = max(0, flight_duration_days) * 24
-
                     if hours_to_add > 0:
                         kursori.execute(
                             "UPDATE aircraft SET hours_flown = hours_flown + %s WHERE aircraft_id = %s",
                             (hours_to_add, aircraft_id),
                         )
-                    # Lennon tila saapuneeksi
-                    kursori.execute("UPDATE flights SET status = 'ARRIVED' WHERE flight_id = %s", (flight_id,))
 
-                    # Kone vapautuu ja siirtyy määräkentälle
+                    # --- Päivitä lennon tila ---
+                    # Käytä erillistä tilaa saapuneille paluulennoille, jos tarpeen
+                    new_flight_status = 'ARRIVED_RTB' if current_flight_status == 'ENROUTE_RTB' else 'ARRIVED'
+                    kursori.execute("UPDATE flights SET status = %s WHERE flight_id = %s", (new_flight_status, flight_id,))
+
+                    # --- Päivitä lentokoneen tila ja sijainti ---
+                    # Koneesta tulee IDLE saapumiskentälle
                     kursori.execute(
                         "UPDATE aircraft SET status = 'IDLE', current_airport_ident = %s WHERE aircraft_id = %s",
                         (arr_ident, aircraft_id),
                     )
 
-                    # Sopimuksen lopputulos (myöhästyminen vähentää palkkiota, mutta ei alle nollan)
-                    if new_day <= deadline:
-                        final_reward = reward
-                        new_status = "COMPLETED"
-                    else:
-                        final_reward = max(Decimal("0.00"), reward - penalty)
-                        new_status = "COMPLETED_LATE"
+                    # --- Käsittele sopimus (Vain jos kyseessä sopimuslento, EI RTB) ---
+                    contract_id = flight_data["contract_id"]
+                    # Tarkista, ettei contract_id ole NULL ja että status oli 'ENROUTE'
+                    if contract_id is not None and current_flight_status == 'ENROUTE':
+                        deadline = int(flight_data["deadline_day"])
+                        reward = _to_dec(flight_data["reward"])
+                        penalty = _to_dec(flight_data["penalty"])
 
-                    kursori.execute(
-                        "UPDATE contracts SET status = %s, completed_day = %s WHERE contractId = %s",
-                        (new_status, new_day, contract_id),
-                    )
+                        # Määritä sopimuksen lopputulos ja palkkio
+                        if new_day <= deadline:
+                            final_reward = reward
+                            new_contract_status = "COMPLETED"
+                        else:
+                            final_reward = max(Decimal("0.00"), reward - penalty)
+                            new_contract_status = "COMPLETED_LATE"
 
-                    total_delta += final_reward
+                        # Päivitä sopimuksen tila
+                        kursori.execute(
+                            "UPDATE contracts SET status = %s, completed_day = %s WHERE contractId = %s",
+                            (new_contract_status, new_day, contract_id),
+                        )
+                        # Lisää ansaittu raha vain sopimuslennoista
+                        total_delta += final_reward
 
-                # Hyvitä ansiot kassaan kerralla
+                # --- Päivitä kassa (jos sopimuksia valmistui) ---
                 if total_delta != Decimal("0.00"):
+                    # Lukitse pelaajan tallennus päivitystä varten
                     kursori.execute("SELECT cash FROM game_saves WHERE save_id = %s FOR UPDATE", (self.save_id,))
-                    row = kursori.fetchone()
-                    cur_cash = _to_dec(row["cash"] if isinstance(row, dict) else row[0])
+                    cur_cash = _to_dec(kursori.fetchone()["cash"])
                     new_cash = (cur_cash + total_delta).quantize(Decimal("0.01"))
+                    # Päivitä kassa tietokantaan
                     kursori.execute("UPDATE game_saves SET cash = %s WHERE save_id = %s", (new_cash, self.save_id))
+                    # Päivitä kassa myös sessio-olioon heti
                     self.cash = new_cash
 
+                # Hyväksy kaikki muutokset tietokantaan
                 yhteys.commit()
+                # Päivitä päivä sessio-olioon vasta onnistuneen commitin jälkeen
                 self.current_day = new_day
 
             except Exception as e:
+                # Peru muutokset, jos jokin meni pieleen
                 yhteys.rollback()
                 if not silent:
                     print(f"❌ Seuraava päivä -käsittely epäonnistui: {e}")
+                # Varmista, että päivä ei päivity, jos transaktio epäonnistuu
+                self._refresh_save_state() # Lataa tila uudelleen tietokannasta
                 return {"arrivals": 0, "earned": Decimal("0.00")}
-        finally:
-            try:
-                kursori.close()
-            except Exception:
-                pass
-            try:
-                yhteys.close()
-            except Exception:
-                pass
+            finally:
+                # Sulje kursori ja yhteys siististi
+                try:
+                    kursori.close()
+                except Exception:
+                    pass
+                try:
+                    yhteys.close()
+                except Exception:
+                    pass
 
-        # Kuukausilaskut joka 30. päivä (vain aktiiviselle yritykselle)
-        if self.current_day % 30 == 0 and self.status == "ACTIVE":
-            self._process_monthly_bills(silent=silent)
+            # --- Käsittele kuukausilaskut ---
+            # Tarkista, onko laskutuspäivä (joka 30. päivä) ja onko peli aktiivinen
+            if self.current_day % 30 == 0 and self.status == "ACTIVE":
+                self._process_monthly_bills(silent=silent)
 
-        # Tulosteet vain ei-hiljaisessa tilassa
-        if not silent:
-            gained_str = f", ansaittu {self._fmt_money(total_delta)}" if arrivals_count > 0 else ""
-            print(f"⏭️  Päivä siirtyi: {self.current_day}{gained_str}.")
-            input("\n↩︎ Enter jatkaaksesi...")
+            # --- Tulosta yhteenveto käyttäjälle (jos ei hiljainen tila) ---
+            if not silent:
+                # Näytä ansaittu raha vain, jos sitä tuli
+                gained_str = f", ansaittu {self._fmt_money(total_delta)}" if total_delta > 0 else ""
+                print(f"⏭️ Päivä siirtyi: {self.current_day}. Saapuneita lentoja: {arrivals_count}{gained_str}.")
+                # Voit poistaa tämän input()-kutsun, jos haluat nopeamman etenemisen
+                input("\n↩︎ Enter jatkaaksesi...")
 
+            # --- Tarkista pelin päättymisehdot (tulostetaan main_menu-loopissa) ---
             if self.status == "BANKRUPT":
-                print("💀 Yritys meni konkurssiin.")
-            if self.current_day >= SURVIVAL_TARGET_DAYS and self.status == "ACTIVE":
-                print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää.")
+                # Konkurssiviesti tulostetaan main_menu:ssa
+                pass
+            elif self.current_day >= SURVIVAL_TARGET_DAYS and self.status == "ACTIVE":
+                # Voittoviesti tulostetaan main_menu:ssa tai pikakelauksen yhteydessä
+                # Status päivitetään VICTORYksi tarvittaessa siellä
+                pass
 
-        return {"arrivals": arrivals_count, "earned": total_delta}
+            # Palauta yhteenveto saapumisista ja ansioista
+            return {"arrivals": arrivals_count, "earned": total_delta}
+        # Virheenkäsittely yhteyden tasolla
+        except Exception as e:
+            if not silent:
+                print(f"❌ Seuraava päivä -käsittely epäonnistui: {e}")
+            return {"arrivals": 0, "earned": Decimal("0.00")}
 
     # ------------ VEROTTAJA TULEE, KUU VAIHTUU --------------
 

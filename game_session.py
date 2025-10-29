@@ -69,6 +69,7 @@ from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime
 from utils import get_connection
 from airplane import init_airplanes, upgrade_airplane as db_upgrade_airplane
+from event_system import InitEvents, SelectEvent
 from session_helpers import (
     _to_dec,
     _icon_title,
@@ -149,7 +150,6 @@ class GameSession:
           3) Pelaaja valitsee ensimmäisen tukikohdan, lisätään SMALL-upgrade
           4) Iso-isä lahjoittaa STARTER-koneen (DC3FREE)
         """
-
         yhteys = get_connection()
         kursori = yhteys.cursor()
         try:
@@ -186,6 +186,7 @@ class GameSession:
             yhteys.close()
 
         session = cls(save_id=save_id)
+        InitEvents(session.rng_seed)
 
         if show_intro:
             session._show_intro_story()
@@ -201,7 +202,6 @@ class GameSession:
         Lataa olemassa olevan tallennuksen ID:llä.
         """
         return cls(save_id=save_id)
-
     # ---------- Intro / Tarina ----------
 
     def _show_intro_story(self) -> None:
@@ -287,11 +287,12 @@ class GameSession:
         Päävalikon looppi – laivasto, kauppa, upgrade, tehtävät ja ajan kulku.
         """
         while True:
+            todaysEvent = SelectEvent("flight", self.current_day, self.rng_seed)
             home_ident = self._get_primary_base_ident() or "-"
             print("\n" + "🛩️  Päävalikko".center(60, " "))
             print("─" * 60)
             print(
-                f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident}")
+                f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident} | Eventti: {todaysEvent.name}")
             print("1) 📋 Listaa koneet")
             print("2) 🛒 Kauppapaikka")
             print("3) ♻️ Päivitykset")
@@ -1662,6 +1663,7 @@ class GameSession:
         Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
         Tarkistaa myös, onko joutilaita koneita väärillä kentillä ja lähettää ne kotiin.
         """
+        todaysEvent = SelectEvent("flight", self.current_day, self.rng_seed)
         # --- LÄHETÄ KONEET KOTIIN (RTB) ---------------------------------
         # Ajetaan tämä vain joka 3. päivä suorituskyvyn säästämiseksi pikakelauksessa
         if self.current_day % 3 == 0:

@@ -2,7 +2,8 @@
 -- Flight Game database schema
 -- --------------------------------------------------------
 
--- Pudotetaan taulut turvallisessa järjestyksessä
+-- Pudotetaan taulut turvallisessa järjestyksessä (riippuvuudet huomioiden)
+DROP TABLE IF EXISTS market_aircraft;
 DROP TABLE IF EXISTS flights;
 DROP TABLE IF EXISTS contracts;
 DROP TABLE IF EXISTS aircraft_upgrades;
@@ -10,8 +11,10 @@ DROP TABLE IF EXISTS base_upgrades;
 DROP TABLE IF EXISTS available_bases; -- ei enää käytössä, varmuuden vuoksi drop
 DROP TABLE IF EXISTS aircraft;
 DROP TABLE IF EXISTS owned_bases;
-DROP TABLE IF EXISTS aircraft_models;
+DROP TABLE IF EXISTS save_event_log;
+DROP TABLE IF EXISTS player_fate;
 DROP TABLE IF EXISTS random_events;
+DROP TABLE IF EXISTS aircraft_models;
 DROP TABLE IF EXISTS game_saves;
 
 -- --------------------------------------------------------
@@ -124,6 +127,8 @@ CREATE TABLE contracts (
   status VARCHAR(40),
   lost_packages INT,
   damaged_packages INT,
+  final_reward DECIMAL(15,2),
+  event_adjustment DECIMAL(15,2),
   save_id INT,
   aircraft_id INT,
   ident VARCHAR(40),
@@ -132,6 +137,21 @@ CREATE TABLE contracts (
   FOREIGN KEY (aircraft_id) REFERENCES aircraft(aircraft_id),
   FOREIGN KEY (ident) REFERENCES airport(ident),
   FOREIGN KEY (event_id) REFERENCES random_events(event_id)
+) ENGINE=InnoDB DEFAULT CHARSET=latin1;
+
+-- --------------------------------------------------------
+-- 6b. save_event_log (tallennuksen tapahtumahistoria)
+-- --------------------------------------------------------
+CREATE TABLE save_event_log (
+  log_id INT AUTO_INCREMENT PRIMARY KEY,
+  save_id INT NOT NULL,
+  event_day INT NOT NULL,
+  event_type VARCHAR(40) NOT NULL,
+  payload TEXT,
+  created_at DATETIME NOT NULL,
+  FOREIGN KEY (save_id) REFERENCES game_saves(save_id),
+  INDEX idx_event_log_save_day (save_id, event_day),
+  INDEX idx_event_log_type (event_type)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 -- --------------------------------------------------------
@@ -190,9 +210,11 @@ CREATE TABLE base_upgrades (
 -- Random events (esimerkkidata)
 -- --------------------------------------------------------
 CREATE TABLE player_fate (
-  seed INT,
-  day INT ,
-  event_name VARCHAR(100) NOT NULL
+  seed INT NOT NULL,
+  day INT NOT NULL,
+  event_name VARCHAR(100) NOT NULL,
+  PRIMARY KEY (seed, day),
+  INDEX idx_player_fate_seed (seed)
 ) ENGINE=InnoDB DEFAULT CHARSET=latin1;
 
 -- --------------------------------------------------------

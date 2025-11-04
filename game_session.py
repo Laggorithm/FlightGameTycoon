@@ -59,17 +59,17 @@ Näin voit testata että RNG-siemen toimii oikein:
 
 """
 
+import logging
 import math
 import random
 import string
-import random
 import time
 from typing import List, Optional, Dict, Set
 from decimal import Decimal, ROUND_HALF_UP, getcontext
 from datetime import datetime
 from utils import get_connection
 from airplane import init_airplanes, upgrade_airplane as db_upgrade_airplane
-from event_system import InitEvents, SelectEvent
+from event_system import init_events_for_seed, get_event_for_day, FlightEvent
 from session_helpers import (
     _to_dec,
     _icon_title,
@@ -97,6 +97,8 @@ from upgrade_config import (
 
 # Decimal-laskennan tarkkuus – rahalaskennassa on hyvä varata skaalaa
 getcontext().prec = 28
+
+logger = logging.getLogger(__name__)
 
 # ---------- GameSession-luokka ----------
 
@@ -150,6 +152,7 @@ class GameSession:
           3) Pelaaja valitsee ensimmäisen tukikohdan, lisätään SMALL-upgrade
           4) Iso-isä lahjoittaa STARTER-koneen (DC3FREE)
         """
+
         yhteys = get_connection()
         kursori = yhteys.cursor()
         try:
@@ -186,10 +189,19 @@ class GameSession:
             yhteys.close()
 
         session = cls(save_id=save_id)
-        InitEvents(session.rng_seed)
 
         if show_intro:
             session._show_intro_story()
+
+        # 🎲 Tapahtumakalenteri talteen heti alussa, jotta kaikki päivät
+        # pysyvät samassa synkassa riippumatta siitä millä käyttöliittymällä
+        # peliä pelataan.
+        if session.rng_seed is not None:
+            try:
+                init_events_for_seed(session.rng_seed, SURVIVAL_TARGET_DAYS)
+            except Exception as err:
+                # Ei haluta pysäyttää peliä – logiikka toimii ilman tapahtumiakin.
+                print(f"⚠️  Satunnaistapahtumien alustus epäonnistui: {err}")
 
         # Ensimmäinen tukikohta + lahjakone (STARTER)
         session._first_time_base_and_gift_setup(starting_cash=_to_dec(cash))
@@ -202,6 +214,7 @@ class GameSession:
         Lataa olemassa olevan tallennuksen ID:llä.
         """
         return cls(save_id=save_id)
+
     # ---------- Intro / Tarina ----------
 
     def _show_intro_story(self) -> None:
@@ -287,21 +300,20 @@ class GameSession:
         Päävalikon looppi – laivasto, kauppa, upgrade, tehtävät ja ajan kulku.
         """
         while True:
-            todaysEvent = SelectEvent("flight", self.current_day, self.rng_seed)
             home_ident = self._get_primary_base_ident() or "-"
             print("\n" + "🛩️  Päävalikko".center(60, " "))
             print("─" * 60)
             print(
-                f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident} | Eventti: {todaysEvent.name}")
+                f"📅 Päivä: {self.current_day:<4} | 💶 Kassa: {self._fmt_money(self.cash):<14} | 👤 Pelaaja: {self.player_name:<16} | 🏢 Tukikohta: {home_ident}")
             print("1) 📋 Listaa koneet")
             print("2) 🛒 Kauppapaikka")
             print("3) ♻️ Päivitykset")
             print("4) 📦 Aktiiviset tehtävät")
             print("5) ➕ Aloita uusi tehtävä")
             print("6) ⏭️ Seuraava päivä")
-            print("7) ⏩ Etene X päivää")
-            print("8) 🎯 Etene kunnes ensimmäinen kone palaa")
-            print("9) 🔧 Koneiden huolto")
+            print("7) 🎯 Etene kunnes ensimmäinen kone palaa")
+            print("8) 🔧 Koneiden huolto")
+            print("9) 📜 Näytä lokimerkinnät (20 uusinta)")
             print("0) 🚪 Poistu")
 
             choice = input("Valinta: ").strip()
@@ -336,27 +348,6 @@ class GameSession:
                     break
 
             elif choice == "7":
-                # Pikakelaus: eteneminen X päivää (hiljaisesti)
-                try:
-                    n = int(input("Kuinka monta päivää? ").strip())
-                except ValueError:
-                    print("⚠️  Virheellinen numero.")
-                else:
-                    self.fast_forward_days(n)
-                    # Pelitilan tarkastelu
-                    if self.status == "BANKRUPT":
-                        print("💀 Yritys meni konkurssiin. Peli päättyy.")
-                        self.show_end_game_stats()
-                        break
-                    if self.current_day >= SURVIVAL_TARGET_DAYS:
-                        # Jos pikakelaus ei jo asettanut VICTORY-tilaa, tee se nyt
-                        if self.status == "ACTIVE":
-                            self._set_status("VICTORY")
-                        print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää. Voitit pelin!")
-                        self.show_end_game_stats()
-                        break
-
-            elif choice == "8":
                 # Pikakelaus: eteneminen kunnes ensimmäinen kone palaa (hiljaisesti)
                 try:
                     cap_str = input("↩︎ Enter aloittaa pikakelauksen.").strip()
@@ -375,9 +366,12 @@ class GameSession:
                         print(f"🏆 Onnea! Selvisit {SURVIVAL_TARGET_DAYS} päivää. Voitit pelin!")
                         break
 
-            elif choice == "9":
+            elif choice == "8":
                 # Huolto
                 self.maintenance_menu()
+
+            elif choice == "9":
+                self.show_recent_event_log()
 
             elif choice == "666":
                 # Shh, avaa salaisen Kas..Kerhohuoneen!
@@ -416,6 +410,61 @@ class GameSession:
             print(f"   💶 Ostohinta: {self._fmt_money(p.purchase_price)} | 🔧 Kunto: {cond}%{broken_flag} | 🧭 Status: {p.status}")
             print(f"   ⏱️ Tunnit: {p.hours_flown} h | 📅 Hankittu päivä: {p.acquired_day}")
             print(f"   ♻️ ECO-taso: {lvl} | Efektiivinen eco-kerroin: x{eco_now:.2f}")
+
+        input("\n↩︎ Enter jatkaaksesi...")
+
+    def show_recent_event_log(self, limit: int = 20) -> None:
+        """Tulosta viimeisimmät lokimerkinnät save_event_log-taulusta."""
+
+        limit = max(1, int(limit))
+        rows = []
+        yhteys = get_connection()
+        try:
+            try:
+                kursori = yhteys.cursor(dictionary=True)
+            except TypeError:
+                kursori = yhteys.cursor()
+
+            try:
+                kursori.execute(
+                    """
+                    SELECT log_id, event_day, event_type, payload, created_at
+                    FROM save_event_log
+                    WHERE save_id = %s
+                    ORDER BY log_id DESC
+                    LIMIT %s
+                    """,
+                    (self.save_id, limit),
+                )
+                rows = kursori.fetchall() or []
+            finally:
+                kursori.close()
+        finally:
+            yhteys.close()
+
+        if not rows:
+            print("ℹ️  Lokissa ei ole vielä merkintöjä.")
+            input("\n↩︎ Enter jatkaaksesi...")
+            return
+
+        rows.reverse()
+
+        _icon_title("Lokimerkinnät")
+        for row in rows:
+            if isinstance(row, dict):
+                event_day = row.get("event_day")
+                event_type = row.get("event_type")
+                payload = row.get("payload")
+                created_at = row.get("created_at")
+            else:
+                event_day, event_type, payload, created_at = row[1], row[2], row[3], row[4]
+
+            if isinstance(created_at, datetime):
+                created_str = created_at.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                created_str = str(created_at) if created_at is not None else "-"
+
+            print(f"{created_str} | Päivä {event_day:>4} | {event_type:<16} | {payload or '-'}")
 
         input("\n↩︎ Enter jatkaaksesi...")
 
@@ -772,7 +821,12 @@ class GameSession:
         try:
             # Kutsutaan yksinkertaistettua funktiota ilman turhia parametreja
             apply_aircraft_upgrade(aircraft_id=aircraft_id, installed_day=self.current_day)
-            self._add_cash(-cost)
+            self._add_cash(-cost, context="AIRCRAFT_ECO_UPGRADE")
+            self._log_event(
+                "AIRCRAFT_UPGRADE",
+                f"aircraft_id={aircraft_id}; cost={cost}; new_level={next_level}",
+                event_day=self.current_day,
+            )
             print("✅ Päivitys tehty.")
         except Exception as e:
             print(f"❌ Päivitys epäonnistui: {e}")
@@ -886,6 +940,13 @@ class GameSession:
             kursori.execute(
                 "UPDATE game_saves SET cash = %s, updated_at = %s WHERE save_id = %s",
                 (new_cash, datetime.utcnow(), self.save_id),
+            )
+
+            self._log_event(
+                "AIRCRAFT_REPAIR",
+                f"aircraft_id={aircraft_id}; cost={repair_cost}",
+                event_day=self.current_day,
+                cursor=kursori,
             )
 
             yhteys.commit()
@@ -1013,6 +1074,13 @@ class GameSession:
             kursori.execute(
                 "UPDATE game_saves SET cash = %s, updated_at = %s WHERE save_id = %s",
                 (new_cash, datetime.utcnow(), self.save_id),
+            )
+
+            self._log_event(
+                "AIRCRAFT_REPAIR_BULK",
+                f"aircraft_ids={','.join(map(str, repair_ids))}; cost={total_cost}",
+                event_day=self.current_day,
+                cursor=kursori,
             )
 
             # 7. Commitoidaan kaikki muutokset
@@ -1196,7 +1264,12 @@ class GameSession:
 
         try:
             insert_base_upgrade(b["base_id"], nxt, cost, self.current_day)
-            self._add_cash(-_to_dec(cost))
+            self._add_cash(-_to_dec(cost), context="BASE_UPGRADE")
+            self._log_event(
+                "BASE_UPGRADE",
+                f"base_id={b['base_id']}; from={current}; to={nxt}; cost={cost}",
+                event_day=self.current_day,
+            )
             print("✅ Tukikohdan päivitys tehty.")
         except Exception as e:
             print(f"❌ Päivitys epäonnistui: {e}")
@@ -1351,7 +1424,6 @@ class GameSession:
         MIN_TASK_REWARD = Decimal("250.00")  # alin sallittu palkkio
         ECO_MIN = Decimal("0.10")  # eco-kerroin ei alle tämän
         ECO_MAX = Decimal("5.00")  # eikä yli tämän
-
         dep_ident = plane["current_airport_ident"]
         speed_kts = float(plane.get("cruise_speed_kts") or 200.0)
         speed_km_per_day = max(1.0, speed_kts * 1.852 * 24.0 * 2.0)
@@ -1387,11 +1459,14 @@ class GameSession:
 
             # Rahti skaalataan etäisyyden mukaan; sallitaan yli-kapasiteetti (→ useita reissuja)
             if dist_km < 500:
-                payload = random.randint(max(1, capacity // 2), max(1, capacity * 3))
+                base_payload = random.randint(max(1, capacity // 2), max(1, capacity * 3))
             elif dist_km < 1500:
-                payload = random.randint(capacity, capacity * 4)
+                base_payload = random.randint(capacity, capacity * 4)
             else:
-                payload = random.randint(capacity * 2, capacity * 6)
+                base_payload = random.randint(capacity * 2, capacity * 6)
+
+            # Päivän tapahtuma ei enää vaikuta etukäteen lastiin; käytetään perusrahtia.
+            payload = max(1, int(base_payload))
 
             # Peruskesto (päivinä) matkan mukaan; yli-kapasiteetti lisää reissujen määrää ja kokonaiskestoa
             base_days = max(1, math.ceil(dist_km / speed_km_per_day))
@@ -1453,6 +1528,7 @@ class GameSession:
                        a.registration,
                        a.current_airport_ident,
                        f.arrival_day,
+                       f.schedule_delay_min,
                        f.status AS flight_status
                 FROM contracts c
                          LEFT JOIN aircraft a ON a.aircraft_id = c.aircraft_id
@@ -1481,14 +1557,28 @@ class GameSession:
                 dest = rd["dest_ident"] if rd else r[8]
                 reg = rd["registration"] if rd else r[9]
                 arr_day = rd["arrival_day"] if rd else r[11]
-                fl_status = rd["flight_status"] if rd else r[12]
+                delay_min = rd["schedule_delay_min"] if rd else r[12]
+                fl_status = rd["flight_status"] if rd else r[13]
+                display_eta = None
+                if arr_day is not None:
+                    try:
+                        arr_day_val = int(arr_day)
+                        delay_minutes_val = int(delay_min) if delay_min is not None else 0
+                        if delay_minutes_val != 0:
+                            delta_days = delay_minutes_val / (24 * 60)
+                            baseline_eta = arr_day_val - int(round(delta_days))
+                            display_eta = baseline_eta
+                        else:
+                            display_eta = arr_day_val
+                    except (ValueError, TypeError):
+                        display_eta = arr_day
                 left_days = (deadline - self.current_day) if deadline is not None else None
                 late = left_days is not None and left_days < 0
 
                 print(
                     f"📦 #{cid} -> {dest} | ✈️ {reg or '-'} | 🧱 {int(payload)} kg | 💶 {self._fmt_money(reward)} | "
                     f"DL: {deadline} ({'myöhässä' if late else f'{left_days} pv jäljellä'}) | "
-                    f"🧭 Tila: {status}{f' / Lento: {fl_status}, ETA {arr_day}' if arr_day is not None else ''}"
+                    f"🧭 Tila: {status}{f' / Lento: {fl_status}, ETA {display_eta if display_eta is not None else arr_day}' if arr_day is not None else ''}"
                 )
             input("\n↩︎ Enter jatkaaksesi...")
         finally:
@@ -1582,20 +1672,44 @@ class GameSession:
                 return
 
             offer = offers[oidx - 1]
+
+            now_day = self.current_day
+            base_total_days = int(offer["total_days"])
+            baseline_arr_day = now_day + base_total_days
+            flight_days = base_total_days
+            duration_factor = 1.0
+            departure_event: Optional[FlightEvent] = None
+            if self.rng_seed is not None:
+                event_candidate = get_event_for_day(self.rng_seed, now_day, "flight", play_sound=False)
+                if event_candidate is not None:
+                    departure_event = event_candidate
+                    try:
+                        raw_factor = float(event_candidate.days if event_candidate.days is not None else 1.0)
+                    except (TypeError, ValueError):
+                        raw_factor = 1.0
+                    if raw_factor <= 0:
+                        raw_factor = 1.0
+                    duration_factor = raw_factor
+                    if raw_factor < 1.0:
+                        flight_days = max(1, math.floor(base_total_days * raw_factor))
+                    elif raw_factor > 1.0:
+                        flight_days = math.ceil(base_total_days * raw_factor)
+
+            arr_day = now_day + flight_days
+            delay_minutes = int((flight_days - base_total_days) * 24 * 60)
+
             print("\nTehtäväyhteenveto:")
             print(
                 f"🛫 {plane['current_airport_ident']} → 🛬 {offer['dest_ident']} | "
                 f"📦 {offer['payload_kg']} kg | 🔁 {offer['trips']} | "
-                f"🕒 {offer['total_days']} pv | 💶 {self._fmt_money(offer['reward'])} | DL: päivä {offer['deadline']}"
+                f"🕒 {base_total_days} pv | 💶 {self._fmt_money(offer['reward'])} | DL: päivä {offer['deadline']}"
             )
             ok = input("Aloitetaanko tehtävä? (k/e): ").strip().lower()
             if ok != "k":
                 print("❎ Peruutettu.")
                 return
 
-            now_day = self.current_day
             total_dist = float(offer["distance_km"]) * offer["trips"]
-            arr_day = now_day + offer["total_days"]
 
             try:
                 yhteys.start_transaction()
@@ -1629,7 +1743,7 @@ class GameSession:
                             %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (
-                        now_day, now_day, arr_day, "ENROUTE", total_dist, 0,
+                        now_day, now_day, arr_day, "ENROUTE", total_dist, delay_minutes,
                         0.0, Decimal("0.00"), plane["current_airport_ident"], offer["dest_ident"],
                         plane["aircraft_id"], self.save_id, contract_id
                     ),
@@ -1640,8 +1754,27 @@ class GameSession:
                     (plane["aircraft_id"],)
                 )
 
+                log_parts = [
+                    f"contract_id={contract_id}",
+                    f"dest={offer['dest_ident']}",
+                    f"payload={offer['payload_kg']}",
+                    f"eta_day={arr_day}",
+                    f"duration_days={flight_days}",
+                ]
+                if delay_minutes != 0:
+                    log_parts.append(f"delay_min={delay_minutes}")
+                if departure_event is not None:
+                    log_parts.append(f"event={departure_event.name}")
+                    log_parts.append(f"duration_factor={duration_factor:.2f}")
+                self._log_event(
+                    "CONTRACT_STARTED",
+                    "; ".join(log_parts),
+                    event_day=now_day,
+                    cursor=kursori,
+                )
+
                 yhteys.commit()
-                print(f"✅ Tehtävä #{contract_id} aloitettu. ETA: {arr_day} (lähtöjä {offer['trips']}).")
+                print(f"✅ Tehtävä #{contract_id} aloitettu. ETA: {baseline_arr_day} (lähtöjä {offer['trips']}).")
                 print("ℹ️  Palkkio hyvitetään, kun lento on saapunut (Seuraava päivä).")
             except Exception as e:
                 yhteys.rollback()
@@ -1663,7 +1796,6 @@ class GameSession:
         Siirtää päivän eteenpäin yhdellä, prosessoi saapuneet lennot ja päivittää kassaa.
         Tarkistaa myös, onko joutilaita koneita väärillä kentillä ja lähettää ne kotiin.
         """
-        todaysEvent = SelectEvent("flight", self.current_day, self.rng_seed)
         # --- LÄHETÄ KONEET KOTIIN (RTB) ---------------------------------
         # Ajetaan tämä vain joka 3. päivä suorituskyvyn säästämiseksi pikakelauksessa
         if self.current_day % 3 == 0:
@@ -1673,6 +1805,7 @@ class GameSession:
         arrivals_count = 0
         total_delta = Decimal("0.00") # Sopimuksista ansaittu raha
         db_timestamp = datetime.utcnow()
+        arrival_details: List[str] = []
 
         yhteys = get_connection()
         try:
@@ -1691,8 +1824,8 @@ class GameSession:
                 kursori.execute(
                     """
                     SELECT f.flight_id, f.contract_id, f.aircraft_id,
-                        f.arr_ident, f.arrival_day, f.dep_day, f.status AS flight_status,
-                        c.deadline_day, c.reward, c.penalty
+                           f.arr_ident, f.arrival_day, f.dep_day, f.status AS flight_status,
+                           c.deadline_day, c.reward, c.penalty, c.payload_kg
                     FROM flights f
                     -- LEFT JOIN, jotta paluulennot (ei sopimusta) tulevat mukaan
                     LEFT JOIN contracts c ON c.contractId = f.contract_id
@@ -1705,6 +1838,7 @@ class GameSession:
                 )
                 arrivals = kursori.fetchall() or []
                 arrivals_count = len(arrivals)
+                daily_events: List[dict] = []
 
                 for flight_data in arrivals:
                     flight_id = flight_data["flight_id"]
@@ -1742,22 +1876,139 @@ class GameSession:
                         deadline = int(flight_data["deadline_day"])
                         reward = _to_dec(flight_data["reward"])
                         penalty = _to_dec(flight_data["penalty"])
+                        payload_val = flight_data.get("payload_kg") if isinstance(flight_data, dict) else None
+                        payload_kg = int(payload_val) if payload_val is not None else 0
 
-                        # Määritä sopimuksen lopputulos ja palkkio
+                        arrival_event: Optional[FlightEvent] = None
+                        event_multiplier = Decimal("1.0")
+                        event_damage = 0
+                        base_contract_reward = reward
+                        if self.rng_seed is not None:
+                            arrival_event = get_event_for_day(self.rng_seed, arr_day, "flight")
+                            if arrival_event is not None:
+                                try:
+                                    event_multiplier = Decimal(str(arrival_event.package_multiplier or 1.0))
+                                except (ArithmeticError, ValueError):
+                                    event_multiplier = Decimal("1.0")
+                                if event_multiplier < Decimal("0.0"):
+                                    event_multiplier = Decimal("0.0")
+                                event_damage = max(0, int(arrival_event.plane_damage or 0))
+
+                        # ✈️🛠️ Tapahtuma voi vahingoittaa koneen kuntoa saapuessa.
+                        if event_damage > 0:
+                            kursori.execute(
+                                "UPDATE aircraft SET condition_percent = GREATEST(0, condition_percent - %s) "
+                                "WHERE aircraft_id = %s",
+                                (event_damage, aircraft_id),
+                            )
+
+                        # Määritä sopimuksen lopputulos ja palkkio ennen tapahtumaa
                         if new_day <= deadline:
-                            final_reward = reward
+                            base_reward = reward
                             new_contract_status = "COMPLETED"
                         else:
-                            final_reward = max(Decimal("0.00"), reward - penalty)
+                            base_reward = max(Decimal("0.00"), reward - penalty)
                             new_contract_status = "COMPLETED_LATE"
 
-                        # Päivitä sopimuksen tila
-                        kursori.execute(
-                            "UPDATE contracts SET status = %s, completed_day = %s WHERE contractId = %s",
-                            (new_contract_status, new_day, contract_id),
+                        final_reward = (base_reward * event_multiplier).quantize(
+                            Decimal("0.01"), rounding=ROUND_HALF_UP
                         )
-                        # Lisää ansaittu raha vain sopimuslennoista
+                        if final_reward < Decimal("0.00"):
+                            final_reward = Decimal("0.00")
+
+                        event_adjustment = (base_contract_reward - final_reward).quantize(
+                            Decimal("0.01")
+                        )
+
+                        delivered_payload = Decimal(payload_kg)
+                        lost_packages = 0
+                        if arrival_event is not None:
+                            if event_multiplier >= Decimal("1.0"):
+                                delivered_payload = Decimal(payload_kg)
+                            else:
+                                delivered_payload = (Decimal(payload_kg) * event_multiplier).quantize(
+                                    Decimal("1"), rounding=ROUND_HALF_UP
+                                )
+                                if delivered_payload < Decimal("0"):
+                                    delivered_payload = Decimal("0")
+                            lost_packages = max(0, int(Decimal(payload_kg) - delivered_payload))
+                        delivered_count = int(delivered_payload)
+
+                        kursori.execute(
+                            "UPDATE contracts SET status = %s, completed_day = %s, event_id = %s, lost_packages = %s, "
+                            "damaged_packages = %s, final_reward = %s, event_adjustment = %s WHERE contractId = %s",
+                            (
+                                new_contract_status,
+                                new_day,
+                                arrival_event.event_id if arrival_event is not None else None,
+                                lost_packages,
+                                event_damage,
+                                final_reward,
+                                event_adjustment,
+                                contract_id,
+                            ),
+                        )
+
                         total_delta += final_reward
+
+                        # Kerää raportointia varten lisätiedot myöhempää tulostusta varten
+                        summary_bits = [
+                            f"✈️ #{contract_id} palasi {arr_ident}",
+                            f"palkkio {self._fmt_money(final_reward)}",
+                            f"toimitus {delivered_count}/{payload_kg} kg",
+                        ]
+                        if arrival_event is not None:
+                            summary_bits.append(f"tapahtuma: {arrival_event.name}")
+                            if event_multiplier != Decimal("1.0"):
+                                summary_bits.append(f"kerroin x{float(event_multiplier):.2f}")
+                            if lost_packages > 0:
+                                summary_bits.append(f"paketteja hukassa {lost_packages} kg")
+                        if new_day > deadline:
+                            summary_bits.append("myöhäinen toimitus")
+                        if event_adjustment != Decimal("0.00"):
+                            summary_bits.append(
+                                f"tapahtumasta vähennettiin {self._fmt_money(event_adjustment)}"
+                            )
+                        arrival_details.append(" | ".join(summary_bits))
+
+                        log_parts = [
+                            f"contract_id={contract_id}",
+                            f"arrival={arr_ident}",
+                            f"reward={final_reward}",
+                            f"reward_base={base_contract_reward}",
+                            f"delivered={delivered_count}",
+                            f"ordered={payload_kg}",
+                        ]
+                        if arrival_event is not None:
+                            log_parts.append(f"event={arrival_event.name}")
+                            if event_multiplier != Decimal("1.0"):
+                                log_parts.append(f"multiplier={event_multiplier}")
+                            if event_damage > 0:
+                                log_parts.append(f"damage={event_damage}")
+                            if event_adjustment != Decimal("0.00"):
+                                log_parts.append(f"event_delta={event_adjustment}")
+                        if lost_packages > 0:
+                            log_parts.append(f"lost={lost_packages}")
+                        if new_day > deadline:
+                            log_parts.append("status=late")
+                        self._log_event(
+                            "CONTRACT_COMPLETED",
+                            "; ".join(log_parts),
+                            event_day=new_day,
+                            cursor=kursori,
+                        )
+
+                        if arrival_event is not None:
+                            daily_events.append(
+                                {
+                                    "name": arrival_event.name,
+                                    "description": arrival_event.description,
+                                    "multiplier": float(event_multiplier),
+                                    "damage": event_damage,
+                                    "reward_delta": event_adjustment,
+                                    "lost_packages": lost_packages,
+                                }
+                            )
 
                 # --- Päivitä kassa (jos sopimuksia valmistui) ---
                 if total_delta != Decimal("0.00"):
@@ -1769,6 +2020,13 @@ class GameSession:
                     kursori.execute("UPDATE game_saves SET cash = %s WHERE save_id = %s", (new_cash, self.save_id))
                     # Päivitä kassa myös sessio-olioon heti
                     self.cash = new_cash
+
+                self._log_event(
+                    "DAY_ADVANCE",
+                    f"new_day={new_day}; arrivals={arrivals_count}; earned={total_delta}",
+                    event_day=new_day,
+                    cursor=kursori,
+                )
 
                 # Hyväksy kaikki muutokset tietokantaan
                 yhteys.commit()
@@ -1782,7 +2040,14 @@ class GameSession:
                     print(f"❌ Seuraava päivä -käsittely epäonnistui: {e}")
                 # Varmista, että päivä ei päivity, jos transaktio epäonnistuu
                 self._refresh_save_state() # Lataa tila uudelleen tietokannasta
-                return {"arrivals": 0, "earned": Decimal("0.00")}
+                return {
+                    "day": self.current_day,
+                    "arrivals": 0,
+                    "earned": Decimal("0.00"),
+                    "arrival_details": [],
+                    "events": [],
+                    "bills": [],
+                }
             finally:
                 # Sulje kursori ja yhteys siististi
                 try:
@@ -1796,11 +2061,17 @@ class GameSession:
 
             # --- Käsittele kuukausilaskut ---
             # Tarkista, onko laskutuspäivä (joka 30. päivä) ja onko peli aktiivinen
+            bill_records: List[dict] = []
             if self.current_day % 30 == 0 and self.status == "ACTIVE":
-                self._process_monthly_bills(silent=silent)
+                bill_info = self._process_monthly_bills(silent=silent)
+                if bill_info:
+                    bill_records.append(bill_info)
 
             # --- Tulosta yhteenveto käyttäjälle (jos ei hiljainen tila) ---
             if not silent:
+                if arrival_details:
+                    for detail in arrival_details:
+                        print(detail)
                 # Näytä ansaittu raha vain, jos sitä tuli
                 gained_str = f", ansaittu {self._fmt_money(total_delta)}" if total_delta > 0 else ""
                 print(f"⏭️ Päivä siirtyi: {self.current_day}. Saapuneita lentoja: {arrivals_count}{gained_str}.")
@@ -1817,12 +2088,26 @@ class GameSession:
                 pass
 
             # Palauta yhteenveto saapumisista ja ansioista
-            return {"arrivals": arrivals_count, "earned": total_delta}
+            return {
+                "day": self.current_day,
+                "arrivals": arrivals_count,
+                "earned": total_delta,
+                "arrival_details": arrival_details,
+                "events": daily_events,
+                "bills": bill_records,
+            }
         # Virheenkäsittely yhteyden tasolla
         except Exception as e:
             if not silent:
                 print(f"❌ Seuraava päivä -käsittely epäonnistui: {e}")
-            return {"arrivals": 0, "earned": Decimal("0.00")}
+            return {
+                "day": self.current_day,
+                "arrivals": 0,
+                "earned": Decimal("0.00"),
+                "arrival_details": [],
+                "events": [],
+                "bills": [],
+            }
 
     # ------------ VEROTTAJA TULEE, KUU VAIHTUU --------------
 
@@ -1870,6 +2155,7 @@ class GameSession:
 
         # UUSI OSA: Laske "korkoa korolle" 60. päivästä alkaen
         total_bill = base_bill
+        growth_multiplier = Decimal("1.00")
         if self.current_day >= 60:
             # Lasketaan, monesko korollinen laskutuskausi on menossa.
             # Päivä 60 = 1. kausi, Päivä 90 = 2. kausi jne.
@@ -1877,7 +2163,7 @@ class GameSession:
 
             # Sovelletaan korkoa korolle -kaavaa peruslaskuun
             # Kaava: Loppusumma = Perussumma * (1 + korko)^kaudet
-            growth_multiplier = (1 + BILL_GROWTH_RATE) ** growth_periods
+            growth_multiplier = Decimal((1 + BILL_GROWTH_RATE) ** growth_periods)
             total_bill = (base_bill * growth_multiplier).quantize(Decimal("0.01"))
 
         if not silent:
@@ -1892,15 +2178,51 @@ class GameSession:
             if not silent:
                 print("💀 Rahat eivät riitä laskuihin. Yritys menee konkurssiin.")
             self._set_status("BANKRUPT")
-            return
+            self._log_event(
+                "BILLS_DEFAULT",
+                f"day={self.current_day}; amount={total_bill}; reason=insufficient_funds",
+                event_day=self.current_day,
+            )
+            return {
+                "status": "BANKRUPT",
+                "amount": total_bill,
+                "base": base_bill,
+                "growth_multiplier": float(growth_multiplier),
+                "total_planes": total_planes,
+            }
 
         try:
-            self._add_cash(-total_bill)
+            self._add_cash(-total_bill, context="MONTHLY_BILL")
+            self._log_event(
+                "BILLS_PAID",
+                f"day={self.current_day}; amount={total_bill}; total_planes={total_planes}",
+                event_day=self.current_day,
+            )
             if not silent:
                 print("✅ Laskut maksettu.")
+            return {
+                "status": "PAID",
+                "amount": total_bill,
+                "base": base_bill,
+                "growth_multiplier": float(growth_multiplier),
+                "total_planes": total_planes,
+            }
         except Exception as e:
             if not silent:
                 print(f"❌ Laskujen veloitus epäonnistui: {e}")
+            self._log_event(
+                "BILLS_ERROR",
+                f"day={self.current_day}; amount={total_bill}; error={e}",
+                event_day=self.current_day,
+            )
+            return {
+                "status": "ERROR",
+                "amount": total_bill,
+                "base": base_bill,
+                "growth_multiplier": float(growth_multiplier),
+                "total_planes": total_planes,
+                "error": str(e),
+            }
 
     # ---------- Eksyneet koneet kotikentille ------------
 
@@ -1970,40 +2292,18 @@ class GameSession:
                             "UPDATE aircraft SET status = 'BUSY_RTB' WHERE aircraft_id = %s",
                             (plane['aircraft_id'],)
                         )
+                        self._log_event(
+                            "FLIGHT_RTB_CREATED",
+                            f"aircraft_id={plane['aircraft_id']}; from={plane['current_airport_ident']}; to={closest_base_ident}; eta_day={arrival_day}",
+                            event_day=self.current_day,
+                            cursor=kursori,
+                        )
                         if not silent:
                             print(
                                 f"  ✈️  Kone {plane['aircraft_id']} palaa kentältä {plane['current_airport_ident']} kotiin ({closest_base_ident}). ETA: päivä {arrival_day}.")
                     except Exception as e:
                         if not silent:
                             print(f"  ❌ Paluulennon luonti koneelle {plane['aircraft_id']} epäonnistui: {e}")
-
-    # ---------- Pikakelaus ---------
-
-    def fast_forward_days(self, days: int) -> None:
-        """
-        Etenee 'days' päivää eteenpäin, hiljaisesti (ei tulostuksia per päivä).
-        Pysähtyy, jos:
-          - status muuttuu BANKRUPT
-          - saavutetaan tai ylitetään SURVIVAL_TARGET_DAYS (status asetetaan VICTORY, jos vielä ACTIVE)
-        Tulostaa lopuksi yhteenvedon.
-        """
-        days = max(0, int(days))
-        arrived_total = 0
-        earned_total = Decimal("0.00")
-
-        for _ in range(days):
-            summary = self.advance_to_next_day(silent=False)
-            arrived_total += int(summary.get("arrivals", 0))
-            earned_total += _to_dec(summary.get("earned", 0))
-            if self.status == "BANKRUPT":
-                break
-            if self.current_day >= SURVIVAL_TARGET_DAYS:
-                if self.status == "ACTIVE":
-                    self._set_status("VICTORY")
-                break
-
-        print(f"⏩ Pikakelaus valmis. Päivä nyt {self.current_day}.")
-        print(f"   ✈️ Saapuneita lentoja: {arrived_total} | 💶 Yhteensä ansaittu: {self._fmt_money(earned_total)}")
 
     def fast_forward_until_first_return(self, max_days: int = 365) -> None:
         """
@@ -2046,10 +2346,13 @@ class GameSession:
         earned_total = Decimal("0.00")
         stop_reason = "max"  # oletus: maksimipäiväraja täyttyi
 
+        day_summaries: List[dict] = []
+
         for _ in range(max_days):
             summary = self.advance_to_next_day(silent=True)
             days_advanced += 1
             earned_total += _to_dec(summary.get("earned", 0))
+            day_summaries.append(summary)
 
             # 1) Ensimmäiset saapumiset havaittu
             if int(summary.get("arrivals", 0)) > 0:
@@ -2077,9 +2380,135 @@ class GameSession:
             print(f"⏹️  Ei paluuta {max_days} päivän aikana. Päivä nyt {self.current_day}.")
 
         print(f"   💶 Kertynyt ansio: {self._fmt_money(earned_total)}")
+
+        if day_summaries:
+            print("\n📅 Päiväkohtaiset tapahtumat:")
+            for item in day_summaries:
+                day_idx = item.get("day", "?")
+                arrivals = int(item.get("arrivals", 0))
+                earned = self._fmt_money(_to_dec(item.get("earned", 0)))
+                events = item.get("events", [])
+                bills = item.get("bills", [])
+                details = item.get("arrival_details", [])
+
+                print(f"  Päivä {day_idx}: ✈️ saapumiset {arrivals}, 💶 ansiot {earned}")
+
+                if details:
+                    for detail in details:
+                        print(f"    • {detail}")
+
+                if events:
+                    for ev in events:
+                        if isinstance(ev, dict):
+                            ev_name = ev.get("name", "Tapahtuma")
+                            ev_desc = ev.get("description")
+                            line = f"    • Tapahtuma: {ev_name}"
+                            if ev_desc:
+                                line += f" – {ev_desc}"
+                            print(line)
+
+                            meta_bits = []
+                            mult_val = ev.get("multiplier")
+                            if mult_val is not None:
+                                try:
+                                    mult_float = float(mult_val)
+                                    if abs(mult_float - 1.0) > 1e-6:
+                                        meta_bits.append(f"kerroin x{mult_float:.2f}")
+                                except (TypeError, ValueError):
+                                    pass
+                            delta_val = ev.get("reward_delta")
+                            if delta_val is not None:
+                                delta_dec = _to_dec(delta_val)
+                                if delta_dec != Decimal("0.00"):
+                                    meta_bits.append(f"muutos {self._fmt_money(delta_dec)}")
+                            damage_val = ev.get("damage")
+                            if damage_val:
+                                meta_bits.append(f"vahinko {damage_val}%")
+                            lost_val = ev.get("lost_packages")
+                            if lost_val:
+                                meta_bits.append(f"hukattiin {lost_val} kg")
+                            if meta_bits:
+                                print(f"      ◦ {', '.join(meta_bits)}")
+                        else:
+                            print(f"    • Tapahtuma: {ev}")
+
+                if bills:
+                    for bill in bills:
+                        amount = self._fmt_money(_to_dec(bill.get("amount", 0)))
+                        base_amt = self._fmt_money(_to_dec(bill.get("base", bill.get("amount", 0))))
+                        status = (bill.get("status") or "PAID").upper()
+                        growth_multiplier = bill.get("growth_multiplier")
+                        growth_note = ""
+                        try:
+                            growth_float = float(growth_multiplier) if growth_multiplier is not None else 1.0
+                            if abs(growth_float - 1.0) > 1e-6:
+                                growth_note = f" (kasvu x{growth_float:.2f})"
+                        except (TypeError, ValueError):
+                            pass
+
+                        if status == "PAID":
+                            info = f"Kuukausilasku maksettu {amount} (perus {base_amt}){growth_note}"
+                        elif status == "BANKRUPT":
+                            info = f"Kuukausilasku {amount} jäi maksamatta → konkurssi"
+                        elif status == "ERROR":
+                            err_msg = bill.get("error")
+                            info = f"Kuukausilasku {amount} epäonnistui{growth_note}{f' ({err_msg})' if err_msg else ''}"
+                        else:
+                            info = f"Kuukausilasku {amount}{growth_note}"
+
+                        print(f"    • {info}")
+
         input("\n↩︎ Enter jatkaaksesi...")
 
     # ---------- DB: apurit ----------
+
+    def _log_event(
+            self,
+            event_type: str,
+            message: str,
+            event_day: Optional[int] = None,
+            cursor=None,
+    ) -> None:
+        """Kirjaa tapahtuman save_event_log-tauluun ilman että peli pysähtyy."""
+
+        day_value = int(event_day if event_day is not None else self.current_day)
+        type_value = (event_type or "UNKNOWN")[:40]
+        payload_value = message or ""
+        timestamp = datetime.utcnow()
+
+        try:
+            if cursor is not None:
+                cursor.execute(
+                    """
+                    INSERT INTO save_event_log (save_id, event_day, event_type, payload, created_at)
+                    VALUES (%s, %s, %s, %s, %s)
+                    """,
+                    (self.save_id, day_value, type_value, payload_value, timestamp),
+                )
+                return
+
+            with get_connection() as yhteys:
+                try:
+                    cur = yhteys.cursor()
+                except TypeError:
+                    cur = yhteys.cursor()
+
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO save_event_log (save_id, event_day, event_type, payload, created_at)
+                        VALUES (%s, %s, %s, %s, %s)
+                        """,
+                        (self.save_id, day_value, type_value, payload_value, timestamp),
+                    )
+                    yhteys.commit()
+                finally:
+                    try:
+                        cur.close()
+                    except Exception:
+                        pass
+        except Exception as exc:  # pragma: no cover - logitus ei saa pysäyttää peliä
+            logger.debug("Lokimerkinnän tallennus epäonnistui (%s): %s", type_value, exc)
 
     def _refresh_save_state(self) -> None:
         """
@@ -2360,14 +2789,18 @@ class GameSession:
                 pass
             yhteys.close()
 
-    def _add_cash(self, delta: Decimal) -> None:
-        """
-        Lisää tai vähennä kassaa (ei saa mennä negatiiviseksi).
-        """
+    def _add_cash(self, delta: Decimal, context: Optional[str] = None) -> None:
+        """Lisää tai vähennä kassaa ja kirjaa muutos lokiin."""
         new_val = (self.cash + _to_dec(delta)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
         if new_val < Decimal("0"):
             raise ValueError("Kassa ei voi mennä negatiiviseksi.")
         self._set_cash(new_val)
+        if context:
+            self._log_event(
+                "CASH_CHANGE",
+                f"delta={delta}; new_cash={new_val}; context={context}",
+                event_day=self.current_day,
+            )
 
     def _set_status(self, new_status: str) -> None:
         """
@@ -2382,6 +2815,11 @@ class GameSession:
             )
             yhteys.commit()
             self.status = new_status
+            self._log_event(
+                "STATUS_UPDATE",
+                f"status={new_status}",
+                event_day=self.current_day,
+            )
         except Exception:
             yhteys.rollback()
             raise
@@ -2456,6 +2894,13 @@ class GameSession:
                 (new_cash, datetime.utcnow(), self.save_id),
             )
 
+            self._log_event(
+                "AIRCRAFT_PURCHASE",
+                f"model={model_code}; registration={registration}; price={purchase_price}; base_id={base_id}",
+                event_day=self.current_day,
+                cursor=kursori,
+            )
+
             yhteys.commit()
             self.cash = new_cash
             return True
@@ -2526,10 +2971,10 @@ class GameSession:
 
         if valinta == voittoheitto:
             print(f"🎉 Tulos oli '{voittoheitto}'! Voitit {self._fmt_money(panos)}!")
-            self._add_cash(panos)
+            self._add_cash(panos, context="CLUB_COIN_WIN")
         else:
             print(f"💸 Tulos oli '{voittoheitto}'. Hävisit {self._fmt_money(panos)}.")
-            self._add_cash(-panos)
+            self._add_cash(-panos, context="CLUB_COIN_LOSS")
 
     def _clubhouse_high_low(self):
         """Peli 2: Suurempi vai Pienempi."""
@@ -2556,13 +3001,13 @@ class GameSession:
 
         if noppa1 == noppa2:
             print("💸 Tasapeli! Talo voittaa aina. Hävisit panoksesi.")
-            self._add_cash(-panos)
+            self._add_cash(-panos, context="CLUB_HILO_PUSH")
         elif tulos_oikein:
             print(f"🎉 Oikein! Voitit {self._fmt_money(panos)}!")
-            self._add_cash(panos)
+            self._add_cash(panos, context="CLUB_HILO_WIN")
         else:
             print(f"💸 Väärin! Hävisit {self._fmt_money(panos)}.")
-            self._add_cash(-panos)
+            self._add_cash(-panos, context="CLUB_HILO_LOSS")
 
     def _clubhouse_slot_machine(self):
         """Peli 3: Yksikätinen Rosvo."""
@@ -2576,7 +3021,7 @@ class GameSession:
         if panos <= 0: return
         if panos > self.cash: print("❌ Ei riittävästi rahaa!"); return
 
-        self._add_cash(-panos)
+        self._add_cash(-panos, context="CLUB_SLOT_BET")
         print(f"Panos {self._fmt_money(panos)} asetettu. Onnea peliin!")
 
         symbols = ['🍒', '🍋', '🔔', '💎', '💰'];
@@ -2608,7 +3053,7 @@ class GameSession:
 
         if voitto > 0:
             print(f"🎉 Voitit {self._fmt_money(voitto)}!")
-            self._add_cash(voitto)
+            self._add_cash(voitto, context="CLUB_SLOT_WIN")
         else:
             print("💸 Ei voittoa tällä kertaa.")
 
@@ -2668,6 +3113,13 @@ class GameSession:
             kursori.execute(
                 "UPDATE game_saves SET updated_at = %s WHERE save_id = %s",
                 (datetime.utcnow(), self.save_id),
+            )
+
+            self._log_event(
+                "AIRCRAFT_GIFT",
+                f"model={model_code}; registration={registration}; base_id={base_id}",
+                event_day=self.current_day,
+                cursor=kursori,
             )
 
             yhteys.commit()

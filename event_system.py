@@ -1,5 +1,9 @@
 """Lentotapahtumien (random_events) hallinta ja integraatiopinta GameSessionille."""
 
+# Tässä moduulissa arvotaan satunnaiset lentotapahtumat määräpäiville, talletetaan ne
+# player_fate-tauluun ja tarjoillaan GameSessionille. Moduuli huolehtii myös siitä,
+# ettei sama äänitehoste toistu useita kertoja saman päivän aikana.
+
 from __future__ import annotations
 
 import logging
@@ -17,6 +21,8 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class FlightEvent:
     """Tietorakenne random_events-taulun yhdelle riville."""
+
+    # Jokainen kenttä vastaa random_events-taulun saraketta ja säilyy immuuttina.
 
     event_id: int
     name: str
@@ -79,6 +85,8 @@ _played_event_sounds: Set[Tuple[int, int]] = set()
 def _fetch_event_definitions(cursor) -> List[FlightEvent]:
     """Noutaa kaikki random_events-rivit muistiin."""
 
+    # Haetaan kaikki tapahtumamäärittelyt kerralla, jotta niitä voidaan käyttää arvonnoissa.
+
     try:
         cursor.execute(
             """
@@ -97,6 +105,8 @@ def _fetch_event_definitions(cursor) -> List[FlightEvent]:
 def _randomize_flight_event(cursor) -> FlightEvent:
     """Valitsee tapahtuman chance_max-arvojen perusteella."""
 
+    # Rakennetaan sanakirja helpottamaan tapahtuman hakua nimen perusteella.
+
     events = _fetch_event_definitions(cursor)
     if not events:
         logger.error("random_events-taulu on tyhjä, arvontaa ei voi suorittaa")
@@ -107,6 +117,7 @@ def _randomize_flight_event(cursor) -> FlightEvent:
     candidate = event_map[candidate_name]
     roll = random.randint(1, max(1, candidate.chance_max))
 
+    # Osuma chance_max-arvoon aktivoi erikoistapahtuman, muuten palautetaan normaali päivä.
     # Arvontamekaniikka: chance_max toimii ylärajana, ja osuma laukaisee erikoistapahtuman.
     if roll == candidate.chance_max:
         return candidate
@@ -120,6 +131,8 @@ def _randomize_flight_event(cursor) -> FlightEvent:
 
 def _event_for_next_day(cursor) -> FlightEvent:
     """Palauttaa seuraavan päivän tapahtuman ja päivittää kestolaskurin."""
+
+    # Jos edellinen tapahtuma päättyi, arvotaan uusi ja asetetaan sen kesto.
 
     global _current_flight_event, _current_duration_left
 
@@ -136,6 +149,8 @@ def _event_for_next_day(cursor) -> FlightEvent:
 
 def _load_event_by_name(cursor, event_name: str) -> Optional[FlightEvent]:
     """Hakee tapahtuman nimen perusteella random_events-taulusta."""
+
+    # Yritetään löytää yksittäinen tapahtumarivi annetulla nimellä.
 
     try:
         cursor.execute(
@@ -157,6 +172,8 @@ def _load_event_by_name(cursor, event_name: str) -> Optional[FlightEvent]:
 
 def _load_event_by_id(cursor, event_id: int) -> Optional[FlightEvent]:
     """Hakee tapahtuman pääavaimen perusteella."""
+
+    # Käytetään yksinkertaista SELECTiä, joka palauttaa yhden rivin ID:n perusteella.
 
     try:
         cursor.execute(
@@ -182,6 +199,8 @@ def init_events_for_seed(seed: int, total_days: int) -> bool:
     Palauttaa True jos uusia rivejä lisättiin. -> Jos data on
     olemassa, funktio ei tee mitään ja palauttaa False.
     """
+
+    # Siemen määrittää koko kampanjan tapahtumajärjestyksen.
 
     if seed is None:
         raise ValueError("Seed ei voi olla None tapahtumien alustuksessa")
@@ -211,6 +230,7 @@ def init_events_for_seed(seed: int, total_days: int) -> bool:
                 event = _event_for_next_day(cursor)
                 entries.append((seed, day, event.name))
 
+            # Täytetään player_fate-taulu yhdellä kerralla tehokkuuden vuoksi.
             cursor.executemany(
                 "INSERT INTO player_fate (seed, day, event_name) VALUES (%s, %s, %s)",
                 entries,
@@ -236,16 +256,18 @@ def init_events_for_seed(seed: int, total_days: int) -> bool:
 
 
 def get_event_for_day(
-        seed: int,
-        day: int,
-        event_type: str = "flight",
-        play_sound: bool = True,
+    seed: int,
+    day: int,
+    event_type: str = "flight",
+    play_sound: bool = True,
 ) -> Optional[FlightEvent]:
     """Hakee tietyn päivän tapahtuman. Nykyisin tuetaan vain "flight"-tyyppiä.
 
     play_sound-parametrilla voidaan estää ääniefektin toisto, jos kutsu tehdään
     pelkän simulaation vuoksi (esim. kestoarvion laskenta valikossa).
     """
+
+    # Vain positiiviset päivät ja tunnettu event_type ovat sallittuja.
 
     if seed is None or day <= 0 or event_type != "flight":
         return None
@@ -277,6 +299,7 @@ def get_event_for_day(
                 and event.sound_file
                 and sound_key not in _played_event_sounds
             ):
+                # Pyritään soittamaan ääniefekti vain kerran per siemen/päivä.
                 try:
                     if event_playsound(event.name):
                         _played_event_sounds.add(sound_key)
@@ -304,6 +327,8 @@ def get_event_for_day(
 
 def get_event_by_id(event_id: Optional[int]) -> Optional[FlightEvent]:
     """Julkinen apuri tapahtumien noutamiseen suoraan ID:llä."""
+
+    # Jos ID puuttuu, palautetaan None ja jätetään tietokantakysely väliin.
 
     if event_id is None:
         return None
